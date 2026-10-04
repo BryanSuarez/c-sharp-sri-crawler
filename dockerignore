@@ -1,0 +1,15 @@
+# Carpetas generadas por Visual Studio — contienen rutas de Windows hardcodeadas
+**/obj/
+**/bin/
+
+# Archivos de Visual Studio
+.vs/
+**/*.user
+**/*.suo
+
+# Git
+.git/
+.gitignore
+
+# Archivos de entorno local
+**/*.Development.json

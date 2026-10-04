@@ -1,0 +1,39 @@
+@HostAddress = http://localhost:5276
+@SriUser = TU_RUC
+@SriPassword = TU_PASSWORD_SRI
+@SriAccessKey = CLAVE_ACCESO_49_DIGITOS
+
+### Consultar comprobantes recibidos (XML)
+POST {{HostAddress}}/api/ConsultaComprobantes/consultar
+accept: */*
+Content-Type: application/json
+
+{
+  "usuario": "{{SriUser}}",
+  "usuarioAdicional": "",
+  "password": "{{SriPassword}}",
+  "dia": 0,
+  "anio": "2026",
+  "mes": 6,
+  "comprobante": 1,
+  "descargarXml": true
+}
+
+### Consultar comprobantes emitidos (PDF)
+POST {{HostAddress}}/api/SriEmitidos/consultar
+accept: */*
+Content-Type: application/json
+
+{
+  "usuario": "{{SriUser}}",
+  "usuarioAdicional": "",
+  "password": "{{SriPassword}}",
+  "comprobante": 1,
+  "anio": 2026,
+  "mes": 6,
+  "dia": 25
+}
+
+### Descargar PDF emitido guardado
+GET {{HostAddress}}/api/SriEmitidos/descargar/{{SriUser}}/{{SriAccessKey}}
+accept: application/pdf

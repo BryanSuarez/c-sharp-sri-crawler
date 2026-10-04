@@ -1,0 +1,35 @@
+version: '3.8'
+
+services:
+  sri-descarga:
+    build: .
+    ports:
+      - "8080:8080"
+    
+    # CRÍTICO para OpenVPN — necesita NET_ADMIN para crear interfaz tun0
+    cap_add:
+      - NET_ADMIN
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    
+    volumes:
+      # Carpeta donde se guardan los XMLs/PDFs descargados
+      - ./wwwroot:/app/wwwroot
+      
+      # Archivo de configuración VPN — NO subir a Git
+      # Pon tu archivo .ovpn aquí antes de levantar el contenedor
+      - ./vpn/client.ovpn:/app/vpn/client.ovpn:ro
+      
+      # Cookies de sesión SRI (persistentes entre reinicios)
+      - ./sri_cookies.json:/app/sri_cookies.json
+    
+    environment:
+      - ASPNETCORE_ENVIRONMENT=Production
+      - ASPNETCORE_URLS=http://+:8080
+      - DISPLAY=:99
+    
+    restart: unless-stopped
+    
+    # Memoria suficiente para Chrome
+    mem_limit: 2g
+    shm_size: '1gb'   # CRÍTICO — Chrome crashea sin suficiente /dev/shm

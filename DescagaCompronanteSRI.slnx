@@ -1,0 +1,5 @@
+<Solution>
+  <Project Path="DescagaCompronanteSRI/DescagaCompronanteSRI.csproj" />
+  <Project Path="DescagaCompronanteSRI.Tests/DescagaCompronanteSRI.Tests.csproj" />
+  <Project Path="TwoCaptcha/TwoCaptcha.csproj" />
+</Solution>
