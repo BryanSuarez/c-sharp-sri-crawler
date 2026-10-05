@@ -1,5 +1,9 @@
+using System.Text.Json.Serialization;
+using DescagaCompronanteSRI.Serialization;
+
 namespace DescagaCompronanteSRI.Models.Enums;
 
+[JsonConverter(typeof(ApiEnumConverter<DocumentType>))]
 public enum DocumentType
 {
     Invoice = 1,

@@ -1,68 +1,45 @@
 using System.Globalization;
-using DescagaCompronanteSRI.Models.Responses;
+using DescagaCompronanteSRI.Models.Extraction;
 using HtmlAgilityPack;
-
 namespace DescagaCompronanteSRI.Services.Parsing;
 
 public static class ReceivedDocumentsTableParser
 {
-    public static ReceivedDocumentResponse? ParseRow(string rowHtml)
+    public static ReceivedDocumentReference? ParseRow(string rowHtml)
     {
-        var cells = GetCells(rowHtml);
-        if (cells.Count < 11)
+        var document = new HtmlDocument();
+        document.LoadHtml(rowHtml);
+        var cells = (document.DocumentNode.SelectNodes("//td[@role='gridcell']")
+            ?? document.DocumentNode.SelectNodes("//td"))?.ToList();
+        if (cells is null || cells.Count < 11) return null;
+        var metadata = new ReceivedDocumentMetadata
         {
-            return null;
-        }
-
-        var document = new ReceivedDocumentResponse
-        {
-            RazonSocial = Text(cells[1]),
-            TipoDocumento = Text(cells[2]),
-            NumeroAutorizacion = Text(cells[3]),
-            FechaEmision = Text(cells[4]),
-            FechaAutorizacion = Text(cells[5]),
-            ImporteTotal = DecimalValue(Text(cells[6])),
-            Impuestos = DecimalValue(Text(cells[7])),
+            SupplierBusinessName = Text(cells[1]),
+            DocumentTypeName = Text(cells[2]),
+            AuthorizationNumber = Text(cells[3]),
+            IssuedAt = Text(cells[4]),
+            AuthorizedAt = Text(cells[5]),
+            Amount = DecimalValue(Text(cells[6])),
+            Taxes = DecimalValue(Text(cells[7])),
             Total = DecimalValue(Text(cells[8])),
-            XmlLinkId = Attribute(cells[9].SelectSingleNode(".//a[@id]"), "id"),
-            PdfLinkId = Attribute(cells[10].SelectSingleNode(".//a[@id]"), "id"),
-            IdDetalle = Attribute(cells[3].SelectSingleNode(".//a[@id]"), "id")
+            RelatedDocuments = cells.Count > 11 ? Attribute(cells[11].SelectSingleNode(".//a[@href]"), "href") : ""
         };
-
-        if (cells.Count > 11)
-        {
-            document.DocumentosRelacionados = Attribute(cells[11].SelectSingleNode(".//a[@href]"), "href");
-        }
-
-        return document;
-    }
-
-    private static IReadOnlyList<HtmlNode> GetCells(string rowHtml)
-    {
-        var doc = new HtmlDocument();
-        doc.LoadHtml(rowHtml);
-
-        var cells = doc.DocumentNode.SelectNodes("//td[@role='gridcell']")
-            ?? doc.DocumentNode.SelectNodes("//td");
-
-        return cells?.ToList() ?? [];
+        return new(metadata,
+            Attribute(cells[9].SelectSingleNode(".//a[@id]"), "id"),
+            Attribute(cells[10].SelectSingleNode(".//a[@id]"), "id"),
+            Attribute(cells[3].SelectSingleNode(".//a[@id]"), "id"));
     }
 
     private static string Text(HtmlNode node) => HtmlEntity.DeEntitize(node.InnerText).Trim();
-
     private static string Attribute(HtmlNode? node, string name) =>
         HtmlEntity.DeEntitize(node?.GetAttributeValue(name, "") ?? "").Trim();
 
     private static decimal DecimalValue(string value)
     {
+        // Locale handling is intentionally preserved for this structural refactor.
         if (decimal.TryParse(value, NumberStyles.Any, CultureInfo.CurrentCulture, out var currentCultureValue))
-        {
             return currentCultureValue;
-        }
-
-        var normalized = value.Replace(",", ".");
-        return decimal.TryParse(normalized, NumberStyles.Any, CultureInfo.InvariantCulture, out var invariantValue)
-            ? invariantValue
-            : 0;
+        return decimal.TryParse(value.Replace(",", "."), NumberStyles.Any, CultureInfo.InvariantCulture, out var invariantValue)
+            ? invariantValue : 0;
     }
 }

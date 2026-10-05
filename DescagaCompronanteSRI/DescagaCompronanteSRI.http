@@ -3,20 +3,34 @@
 @SriPassword = TU_PASSWORD_SRI
 @SriAccessKey = CLAVE_ACCESO_49_DIGITOS
 
-### Consultar comprobantes recibidos (XML)
-POST {{HostAddress}}/api/ConsultaComprobantes/consultar
-accept: */*
+### Query received documents (XML)
+POST {{HostAddress}}/api/received-documents/query
 Content-Type: application/json
 
 {
-  "usuario": "{{SriUser}}",
-  "usuarioAdicional": "",
+  "user": "{{SriUser}}",
+  "additionalUser": null,
   "password": "{{SriPassword}}",
-  "dia": 0,
-  "anio": "2026",
-  "mes": 6,
-  "comprobante": 1,
-  "descargarXml": true
+  "year": 2026,
+  "month": 6,
+  "day": 0,
+  "documentType": "invoice",
+  "downloadFormat": "xml"
+}
+
+### Query received documents (PDF)
+POST {{HostAddress}}/api/received-documents/query
+Content-Type: application/json
+
+{
+  "user": "{{SriUser}}",
+  "additionalUser": null,
+  "password": "{{SriPassword}}",
+  "year": 2026,
+  "month": 6,
+  "day": 0,
+  "documentType": "invoice",
+  "downloadFormat": "pdf"
 }
 
 ### Consultar comprobantes emitidos (PDF)
