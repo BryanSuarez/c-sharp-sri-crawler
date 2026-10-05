@@ -1,4 +1,5 @@
 using System.Text;
+using Microsoft.Extensions.Options;
 using DescagaCompronanteSRI.Contracts;
 using DescagaCompronanteSRI.Helpers;
 using DescagaCompronanteSRI.Models.Dtos;
@@ -29,6 +30,12 @@ public class ReceivedDocumentsBrowserTests
             <button id="frmPrincipal:btnConsultarSinRe" type="button">Consultar</button>
             <table><tbody id="frmPrincipal:tablaCompRecibidos_data">ROW</tbody></table>
             </form><script>
+            window.PrimeFaces = { widgets: { received: { id: 'frmPrincipal:tablaCompRecibidos', cfg: { paginator: false } } } };
+            document.getElementById('frmPrincipal:btnConsultarSinRe').onclick = async () => {
+                await (await fetch(location.href, { method: 'POST', body: new URLSearchParams({ 'javax.faces.source': 'frmPrincipal:btnConsultarSinRe' }) })).text();
+                const body = document.getElementById('frmPrincipal:tablaCompRecibidos_data');
+                body.innerHTML = body.innerHTML;
+            };
             window.mojarra = { jsfcljs: function() {
                 const link = document.createElement('a');
                 link.href = URL.createObjectURL(new Blob(['%PDF-1.4\nSynthetic test'], {type:'application/pdf'}));
@@ -46,12 +53,12 @@ public class ReceivedDocumentsBrowserTests
                 : html
         }));
         var session = new BrowserSession(browser);
-        var page = new ReceivedDocumentsPage(NullLogger<ReceivedDocumentsPage>.Instance);
+        var page = new ReceivedDocumentsPage(NullLogger<ReceivedDocumentsPage>.Instance, Options.Create(new ReceivedDocumentsPaginationOptions()));
         Assert.True(await page.OpenAsync(session));
         var queried = await page.QueryAsync(session, ReceivedDocumentsServiceTests.Query());
         Assert.True(queried.IsSuccess);
-        Assert.Equal(1, queried.Value);
-        var rowResult = await page.ReadRowAsync(session, 0);
+        Assert.Single(queried.Value!.Rows);
+        var rowResult = queried.Value.Rows[0].Result;
         Assert.True(rowResult.IsSuccess);
         var document = rowResult.Value!;
         Assert.Equal("1234567890123456789012345678901234567890123456789", document.Metadata.AuthorizationNumber);

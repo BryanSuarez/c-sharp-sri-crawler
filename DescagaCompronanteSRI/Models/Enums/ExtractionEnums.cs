@@ -15,5 +15,10 @@ public enum DocumentParseStatus { Parsed, Failed, Unsupported, NotApplicable }
 public enum ExtractionErrorCode
 {
     LoginFailed, PortalAccessFailed, QueryFailed, RowReadFailed,
-    DownloadFailed, ParsingFailed, UnsupportedDocumentType, StorageFailed, UnexpectedError
+    DownloadFailed, ParsingFailed, UnsupportedDocumentType, StorageFailed, UnexpectedError,
+    PaginationNavigationFailed, RepeatedPage, DuplicateDocument, PaginationStateUnknown,
+    PaginationInconsistent, PaginationLimitReached
 }
+
+[JsonConverter(typeof(ApiEnumConverter<PaginationStatus>))]
+public enum PaginationStatus { NotStarted, Completed, Incomplete }

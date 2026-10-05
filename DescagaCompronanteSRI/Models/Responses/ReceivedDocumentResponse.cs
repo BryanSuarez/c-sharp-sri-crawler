@@ -5,6 +5,7 @@ namespace DescagaCompronanteSRI.Models.Responses;
 
 public sealed class ReceivedDocumentResponse
 {
+    public int PageNumber { get; init; } = 1;
     public int RowIndex { get; init; }
     public ReceivedDocumentMetadata? Metadata { get; set; }
     public DownloadFormat DownloadFormat { get; init; }

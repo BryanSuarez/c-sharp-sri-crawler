@@ -4,7 +4,9 @@
 @SriPassword = TU_PASSWORD_SRI
 @SriAccessKey = CLAVE_ACCESO_49_DIGITOS
 
-### Query received documents (XML)
+### Query received documents across all verifiable pages (XML)
+# Inspect pagination.status, pagesProcessed, reportedTotalCount and duplicateCount.
+# Partial traversal preserves saved files and still returns HTTP 200.
 POST {{HostAddress}}/api/received-documents/query
 Content-Type: application/json
 
@@ -20,7 +22,8 @@ Content-Type: application/json
   "downloadFormat": "xml"
 }
 
-### Query received documents (PDF)
+### Query received documents across all verifiable pages (PDF)
+# Use a real period with more than 50 documents to validate against the SRI portal.
 POST {{HostAddress}}/api/received-documents/query
 Content-Type: application/json
 

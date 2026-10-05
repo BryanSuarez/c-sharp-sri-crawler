@@ -28,7 +28,7 @@ git commit -m "chore: quitar wwwroot del control de versiones"
 
 | Flujo | Endpoint | Qué hace |
 |---|---|---|
-| Recibidos | `POST /api/received-documents/query` | Consulta la página actual de recibidos y descarga XML o PDF según `downloadFormat`. |
+| Recibidos | `POST /api/received-documents/query` | Recorre las páginas verificables de recibidos y descarga XML o PDF según `downloadFormat`. |
 | Emitidos | `POST /api/SriEmitidos/consultar` | Consulta comprobantes emitidos autorizados y descarga PDFs. |
 | Descargar PDF emitido guardado | `GET /api/SriEmitidos/descargar/{ruc}/{claveAcceso}` | Devuelve un PDF emitido previamente descargado. |
 
@@ -114,16 +114,16 @@ POST /api/received-documents/query
   -> ReceivedDocumentsController: valida la solicitud en inglés
   -> ReceivedDocumentsService: coordina una extracción
   -> ReceivedDocumentsSession: reutiliza login y acceso al portal; libera la sesión
-  -> ReceivedDocumentsPage: navega, aplica filtros y lee la página actual
+  -> ReceivedDocumentsPage: aplica filtros, toma instantáneas y verifica cada avance de página
   -> DocumentDownloader: elige la estrategia XML o PDF por DownloadFormat
   -> DocumentParser: extrae XML e informa el resultado de interpretación
   -> IDocumentStorage: guarda y abre contenido mediante LocalDocumentStorage o S3CompatibleDocumentStorage
   -> ReceivedDocumentsResponse: contadores, resultados por documento y errores tipados
 ```
 
-`ReceivedDocumentsPage` encapsula el DOM y las referencias JSF. Esos identificadores no se incluyen en la respuesta pública. Los modelos XML están en `Models/Documents`; sus identificadores C# son ingleses y los atributos de serialización conservan los nombres del SRI.
+`ReceivedDocumentsPage` encapsula el DOM y las referencias JSF. Reconoce los widgets del registro moderno `PrimeFaces.widgets` y las variables globales de versiones antiguas (como `wdvTablaRecibidos`); omite las ventanas de iframes de otro origen, como reCAPTCHA, que bloquean la inspección de propiedades. Esos identificadores no se incluyen en la respuesta pública. Los modelos XML están en `Models/Documents`; sus identificadores C# son ingleses y los atributos de serialización conservan los nombres del SRI.
 
-El procesamiento sigue siendo síncrono, secuencial y limitado a la página visible. La refactorización conserva los tiempos, reintentos y comprobaciones existentes. Paginación completa, corrección regional de importes, validación estricta, deduplicación y concurrencia siguen pendientes.
+El procesamiento es síncrono y secuencial, reutiliza una sesión y recorre todas las páginas cuya navegación puede confirmar. Cada archivo se libera después de guardarlo. Los identificadores JSF se renuevan por página; las claves de acceso y huellas permiten detectar repeticiones dentro de la extracción. Los resultados interpretados siguen acumulándose en la respuesta. Corrección regional de importes, validación estricta de archivos, deduplicación entre consultas y concurrencia siguen pendientes.
 
 Nuevas descargas de recibidos:
 
@@ -266,7 +266,7 @@ curl --location 'http://localhost:5276/api/SriEmitidos/descargar/1234567890001/C
 
 ### Recibidos
 
-La respuesta incluye todos los resultados de la página procesada, incluso filas que no pudieron leerse o descargarse:
+La respuesta incluye los resultados de todas las páginas procesadas, incluso filas que no pudieron leerse o descargarse:
 
 ```json
 {
@@ -277,8 +277,15 @@ La respuesta incluye todos los resultados de la página procesada, incluso filas
   "discoveredCount": 1,
   "downloadedCount": 1,
   "failedCount": 0,
+  "pagination": {
+    "status": "completed",
+    "pagesProcessed": 1,
+    "reportedTotalCount": 1,
+    "duplicateCount": 0
+  },
   "documents": [
     {
+      "pageNumber": 1,
       "rowIndex": 0,
       "metadata": {
         "supplierBusinessName": "EXAMPLE SUPPLIER",
@@ -308,15 +315,48 @@ La respuesta incluye todos los resultados de la página procesada, incluso filas
 }
 ```
 
-- `status`: `completed`, `partial`, `failed` o `noDocuments`. Describe el resultado de la página actual, no garantiza cobertura de todas las páginas del SRI.
+- `status`: `completed` exige recorrido completo y todos los documentos descubiertos guardados; `partial` indica que se guardó al menos uno, pero hubo descargas fallidas o recorrido incompleto; `failed` indica que ninguno se guardó y existen fallos o recorrido incompleto; `noDocuments` exige una consulta vacía confirmada.
+- `pagination.status`: `notStarted` si no se ejecutó la consulta, `completed` si se verificó todo el recorrido, `incomplete` si faltó evidencia o hubo anomalías. Es independiente del éxito de las descargas.
+- `pagination.pagesProcessed`: páginas distintas con filas procesadas; una consulta vacía confirmada devuelve cero. `reportedTotalCount` conserva el primer total anunciado disponible, o `null`; cualquier cambio posterior produce inconsistencia.
+- `pagination.duplicateCount`: filas repetidas omitidas. Se conserva el primer resultado de cada clave y se procesan los documentos nuevos, pero el recorrido queda `incomplete`.
+- `discoveredCount = downloadedCount + failedCount`: incluye un resultado por clave distinta y uno por fila ilegible. Excluye duplicados omitidos; el total del portal se contrasta con las filas recorridas, incluidos esos duplicados.
 - `downloadStatus`: `downloaded` o `failed`. Descargado significa obtenido y guardado con las comprobaciones actuales; no certifica validez contable ni validación XML estricta.
 - `parseStatus`: `parsed`, `failed`, `unsupported` o `notApplicable` (PDF). Un error de interpretación conserva el archivo descargado y se reporta en `errors` del documento; no cambia su estado de descarga.
 - `parsedDocument`: contenido interpretado con propiedades JSON en inglés. Las guías siguen sin interpretación conectada y producen `unsupported`.
 - `storage`: referencia estable con `provider` (`local`, `s3` o `r2`), `bucket` y `key`. En local, `bucket` es `null` y `filePath` contiene la ruta física; en remoto, `filePath` es `null`. Sin almacenamiento confirmado, `storage` es `null`. No se devuelven URLs firmadas.
-- `metadata` puede ser `null` si la fila no pudo leerse. `rowIndex` comienza en cero.
-- Cada error contiene `code`, `message` y, para errores de documento, `rowIndex`. Los códigos son `loginFailed`, `portalAccessFailed`, `queryFailed`, `rowReadFailed`, `downloadFailed`, `parsingFailed`, `unsupportedDocumentType`, `storageFailed` y `unexpectedError`.
+- `metadata` puede ser `null` si la fila no pudo leerse. `pageNumber` comienza en uno y `rowIndex` comienza en cero dentro de cada página.
+- Cada error contiene `code`, `message`, `pageNumber` y `rowIndex` (ubicaciones `null` cuando no corresponden). Los códigos existentes son `loginFailed`, `portalAccessFailed`, `queryFailed`, `rowReadFailed`, `downloadFailed`, `parsingFailed`, `unsupportedDocumentType`, `storageFailed` y `unexpectedError`.
 
-Una consulta ejecutada devuelve HTTP `200`, incluso si todos sus documentos fallaron; el resultado lo indica `status`. Errores previos a la ejecución de la consulta devuelven `500` con resultado tipado. Solicitudes inválidas devuelven `400`.
+Los errores de paginación son `paginationNavigationFailed`, `repeatedPage`, `duplicateDocument`, `paginationStateUnknown`, `paginationInconsistent` y `paginationLimitReached`.
+
+Una consulta ejecutada devuelve HTTP `200`, incluso si falla una transición posterior o todos sus documentos fallaron; el resultado lo indica `status`. Errores previos a la ejecución de la consulta devuelven `500` con resultado tipado. Solicitudes inválidas devuelven `400`.
+
+### Configuración y verificación de paginación
+
+No cambia el body de la solicitud. Estas opciones pertenecen al servidor, en `appsettings.json` o mediante variables de entorno con separador `__` (por ejemplo `ReceivedDocumentsPagination__MaxPages=1000`):
+
+```json
+{
+  "ReceivedDocumentsPagination": {
+    "MaxPages": 1000,
+    "NavigationAttempts": 3,
+    "TransitionTimeoutMilliseconds": 60000,
+    "RetryDelayMilliseconds": 2000
+  }
+}
+```
+
+Cada avance tiene hasta tres intentos de espera, de hasta 60 segundos cada uno, con pausas de 2 y 4 segundos. Si una respuesta sigue pendiente o el paginador ya avanzó, se espera esa misma operación sin volver a pulsar «siguiente». Se exige respuesta correlacionada, actualización de tabla y posición verificable. Una página de menos de 50 filas no implica final; sin paginador se necesita confirmación del widget de página única o paginación deshabilitada. El límite solo interrumpe si aún quedan páginas pendientes. Las opciones inválidas impiden arrancar.
+
+Un retroceso, salto o página completa repetida detiene el recorrido. Un total cambiante, una página vacía inesperada, un final prematuro o documentos repetidos impiden declarar `completed`. Los archivos ya guardados se conservan. Esto verifica las señales del portal, sin ofrecer una instantánea transaccional de datos que el SRI pudiera cambiar durante la consulta.
+
+Pruebas locales con Chrome, sin entrar al SRI ni usar el almacenamiento remoto real:
+
+```bash
+SRI_STORAGE_TESTS=0 SRI_BROWSER_TESTS=1 dotnet test DescagaCompronanteSRI.Tests/DescagaCompronanteSRI.Tests.csproj --configuration Release
+```
+
+La validación real de paginación requiere un período con más de 50 documentos: contrastar el total mostrado por el SRI con `reportedTotalCount`, las páginas procesadas, los conteos y los objetos efectivamente guardados. Ejecutar XML y PDF por separado. **Validación real realizada con PDF:** 361 documentos anunciados, 8 páginas procesadas (7 de 50 filas y una de 11), 361 documentos guardados, cero fallos y cero duplicados; `status` y `pagination.status` devolvieron `completed`. Una lectura independiente de S3 confirmó los 361 objetos PDF esperados, ninguno vacío, y recuperó un PDF por página. También se recorrieron las ocho páginas en otra sesión y se descargó e interpretó correctamente un XML por página (8 muestras; no una extracción XML completa). El portal simulado cubre además múltiples páginas, respuestas tardías, referencias JSF renovadas y la variante antigua de PrimeFaces con un iframe de otro origen. Las pruebas automatizadas Local/S3/R2 utilizan sustitutos; la prueba real S3 continúa siendo opcional.
 
 ### Emitidos
 

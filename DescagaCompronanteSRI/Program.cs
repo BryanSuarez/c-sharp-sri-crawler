@@ -43,6 +43,8 @@ builder.Services.AddScoped<ISriPortalSessionService, SriPortalSessionService>();
 builder.Services.AddScoped<IPdfDownloadService, PdfDownloadService>();
 
 builder.Services.AddScoped<IReceivedDocumentsSessionFactory, ReceivedDocumentsSessionFactory>();
+builder.Services.AddOptions<ReceivedDocumentsPaginationOptions>()
+    .BindConfiguration("ReceivedDocumentsPagination").ValidateDataAnnotations().ValidateOnStart();
 builder.Services.AddScoped<IReceivedDocumentsPage, ReceivedDocumentsPage>();
 builder.Services.AddScoped<IDocumentParser, DocumentParser>();
 builder.Services.AddScoped<IDocumentDownloadStrategy, XmlDocumentDownloadStrategy>();
@@ -60,6 +62,7 @@ builder.Services.AddSwaggerGen(c =>
     c.MapType<StorageProvider>(() => EnumSchema<StorageProvider>());
     c.MapType<DocumentType>(() => EnumSchema<DocumentType>());
     c.MapType<DownloadFormat>(() => EnumSchema<DownloadFormat>());
+    c.MapType<PaginationStatus>(() => EnumSchema<PaginationStatus>());
     c.MapType<ExtractionStatus>(() => EnumSchema<ExtractionStatus>());
     c.MapType<DocumentDownloadStatus>(() => EnumSchema<DocumentDownloadStatus>());
     c.MapType<DocumentParseStatus>(() => EnumSchema<DocumentParseStatus>());
