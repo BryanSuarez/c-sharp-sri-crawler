@@ -5,6 +5,7 @@ namespace DescagaCompronanteSRI.Models.Responses;
 
 public sealed class ReceivedDocumentsResponse
 {
+    public required string CompanyId { get; init; }
     public required string TaxpayerId { get; init; }
     public string BusinessName { get; set; } = "";
     public ExtractionStatus Status { get; set; } = ExtractionStatus.Failed;

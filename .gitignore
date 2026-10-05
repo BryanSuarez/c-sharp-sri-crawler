@@ -376,3 +376,6 @@ audit
 plans
 prs
 improvements.md
+
+# Private document storage configuration
+.env.storage

@@ -7,6 +7,8 @@ using DescagaCompronanteSRI.Models.Dtos;
 using DescagaCompronanteSRI.Models.Enums;
 using DescagaCompronanteSRI.Models.Extraction;
 using DescagaCompronanteSRI.Models.Responses;
+using DescagaCompronanteSRI.Models.Storage;
+using Microsoft.Extensions.Configuration;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.Extensions.DependencyInjection;
@@ -25,7 +27,7 @@ public sealed class ReceivedDocumentsApiTests : IClassFixture<ReceivedDocumentsA
     }
 
     private const string ValidJson = """
-        {"user":"1790012345001","password":"test-only","year":2026,"month":6,"day":0,"documentType":"invoice","downloadFormat":"xml"}
+        {"companyId":"acme","user":"1790012345001","password":"test-only","year":2026,"month":6,"day":0,"documentType":"invoice","downloadFormat":"xml"}
         """;
 
     [Fact]
@@ -36,12 +38,18 @@ public sealed class ReceivedDocumentsApiTests : IClassFixture<ReceivedDocumentsA
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         var body = JsonDocument.Parse(await response.Content.ReadAsStringAsync()).RootElement;
         Assert.Equal("1790012345001", body.GetProperty("taxpayerId").GetString());
+        Assert.Equal("acme", body.GetProperty("companyId").GetString());
         Assert.Equal("completed", body.GetProperty("status").GetString());
         Assert.Equal(1, body.GetProperty("downloadedCount").GetInt32());
         var document = body.GetProperty("documents")[0];
         Assert.Equal("xml", document.GetProperty("downloadFormat").GetString());
         Assert.Equal("downloaded", document.GetProperty("downloadStatus").GetString());
         Assert.Equal("parsed", document.GetProperty("parseStatus").GetString());
+        Assert.Equal("s3", document.GetProperty("storage").GetProperty("provider").GetString());
+        Assert.Equal("test-bucket", document.GetProperty("storage").GetProperty("bucket").GetString());
+        Assert.False(document.GetProperty("storage").TryGetProperty("localPath", out _));
+        Assert.Equal(JsonValueKind.Null, document.GetProperty("filePath").ValueKind);
+        Assert.Equal("acme", _factory.Received.LastQuery!.CompanyId);
         Assert.False(body.TryGetProperty("querySucceeded", out _));
         Assert.False(document.TryGetProperty("xmlLinkId", out _));
         Assert.False(document.GetProperty("metadata").TryGetProperty("detailId", out _));
@@ -83,6 +91,7 @@ public sealed class ReceivedDocumentsApiTests : IClassFixture<ReceivedDocumentsA
     [InlineData("day")]
     [InlineData("user")]
     [InlineData("password")]
+    [InlineData("companyId")]
     public async Task Query_RejectsMissingRequiredField(string field)
     {
         var fields = JsonSerializer.Deserialize<Dictionary<string, object>>(ValidJson)!;
@@ -117,6 +126,32 @@ public sealed class ReceivedDocumentsApiTests : IClassFixture<ReceivedDocumentsA
             """);
     }
 
+    [Theory]
+    [InlineData("")]
+    [InlineData("ACME")]
+    [InlineData("../acme")]
+    [InlineData("acme/another")]
+    [InlineData("acme ")]
+    [InlineData("acme\n")]
+    [InlineData("-acme")]
+    [InlineData("acme-")]
+    public async Task Query_RejectsInvalidCompanyBeforeCallingService(string companyId)
+    {
+        var fields = JsonSerializer.Deserialize<Dictionary<string, object>>(ValidJson)!;
+        fields["companyId"] = companyId;
+        await AssertRejected(JsonSerializer.Serialize(fields));
+    }
+
+    [Theory]
+    [InlineData("provider")]
+    [InlineData("bucket")]
+    public async Task Query_RejectsStorageConfigurationInBody(string field)
+    {
+        var fields = JsonSerializer.Deserialize<Dictionary<string, object>>(ValidJson)!;
+        fields[field] = "client-controlled";
+        await AssertRejected(JsonSerializer.Serialize(fields));
+    }
+
     [Fact]
     public async Task PreviousReceivedRouteIsRemoved()
     {
@@ -147,6 +182,9 @@ public sealed class ReceivedDocumentsApiTests : IClassFixture<ReceivedDocumentsA
         Assert.False(paths.TryGetProperty("/api/ConsultaComprobantes/consultar", out _));
         Assert.True(paths.TryGetProperty("/api/SriEmitidos/consultar", out _));
         var properties = spec.GetProperty("components").GetProperty("schemas").GetProperty("ReceivedDocumentsQueryRequest").GetProperty("properties");
+        Assert.True(properties.TryGetProperty("companyId", out _));
+        Assert.False(properties.TryGetProperty("provider", out _));
+        Assert.False(properties.TryGetProperty("bucket", out _));
         Assert.Equal("string", properties.GetProperty("documentType").GetProperty("type").GetString());
         Assert.Contains("invoice", properties.GetProperty("documentType").GetProperty("enum").EnumerateArray().Select(v => v.GetString()));
         Assert.Contains("xml", properties.GetProperty("downloadFormat").GetProperty("enum").EnumerateArray().Select(v => v.GetString()));
@@ -168,6 +206,9 @@ public sealed class ReceivedDocumentsApiTests : IClassFixture<ReceivedDocumentsA
         public StubReceivedService Received { get; } = new();
         protected override void ConfigureWebHost(IWebHostBuilder builder)
         {
+            builder.UseEnvironment("Testing");
+            builder.ConfigureAppConfiguration((_, config) => config.AddInMemoryCollection(new Dictionary<string, string?>
+            { ["DOCUMENT_STORAGE_PROVIDER"] = "Local" }));
             builder.UseContentRoot(Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "../../../../DescagaCompronanteSRI")));
             builder.ConfigureServices(services =>
             {
@@ -190,7 +231,7 @@ public sealed class ReceivedDocumentsApiTests : IClassFixture<ReceivedDocumentsA
             LastQuery = query;
             var result = new ReceivedDocumentsResponse
             {
-                TaxpayerId = query.User, QuerySucceeded = QuerySucceeded,
+                CompanyId = query.CompanyId, TaxpayerId = query.User, QuerySucceeded = QuerySucceeded,
                 Status = QuerySucceeded ? ExtractionStatus.Completed : ExtractionStatus.Failed,
                 DiscoveredCount = QuerySucceeded ? 1 : 0
             };
@@ -199,6 +240,8 @@ public sealed class ReceivedDocumentsApiTests : IClassFixture<ReceivedDocumentsA
                 {
                     Metadata = new() { AuthorizationNumber = new string('1', 49) },
                     DownloadFormat = query.DownloadFormat, DownloadStatus = DocumentDownloadStatus.Downloaded,
+                    Storage = new DocumentStorageReference(StorageProvider.S3, "test-bucket",
+                        "acme/1790012345001/2026/06/received/invoice/" + new string('1', 49) + ".xml"),
                     ParseStatus = DocumentParseStatus.Parsed
                 });
             else result.Errors.Add(new(ExtractionErrorCode.QueryFailed, "Query failed."));

@@ -3,6 +3,7 @@ using DescagaCompronanteSRI.Models.Dtos;
 using DescagaCompronanteSRI.Models.Enums;
 using DescagaCompronanteSRI.Models.Extraction;
 using DescagaCompronanteSRI.Models.Responses;
+using DescagaCompronanteSRI.Models.Storage;
 
 namespace DescagaCompronanteSRI.Services.ReceivedDocuments;
 
@@ -13,7 +14,7 @@ public sealed class ReceivedDocumentsService(
 {
     public async Task<ReceivedDocumentsResponse> QueryAsync(ReceivedDocumentsQuery query)
     {
-        var result = new ReceivedDocumentsResponse { TaxpayerId = query.User };
+        var result = new ReceivedDocumentsResponse { CompanyId = query.CompanyId, TaxpayerId = query.User };
         var stage = ExtractionErrorCode.LoginFailed;
         try
         {
@@ -99,7 +100,10 @@ public sealed class ReceivedDocumentsService(
             if (parsed.Error is not null) result.Errors.Add(parsed.Error with { RowIndex = rowIndex });
 
             stage = ExtractionErrorCode.StorageFailed;
-            result.FilePath = await storage.SaveAsync(query.User, result.Metadata.AuthorizationNumber, content);
+            result.Storage = await storage.SaveAsync(new DocumentStorageContext(
+                query.CompanyId, query.User, query.Year, query.Month, DocumentDirection.Received, query.DocumentType,
+                result.Metadata.AuthorizationNumber), content);
+            result.FilePath = result.Storage.LocalPath;
             result.DownloadStatus = DocumentDownloadStatus.Downloaded;
         }
         catch (Exception exception)

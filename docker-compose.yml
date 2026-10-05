@@ -23,6 +23,9 @@ services:
       # Cookies de sesión SRI (persistentes entre reinicios)
       - ./sri_cookies.json:/app/sri_cookies.json
     
+    env_file:
+      - .env.storage
+
     environment:
       - ASPNETCORE_ENVIRONMENT=Production
       - ASPNETCORE_URLS=http://+:8080

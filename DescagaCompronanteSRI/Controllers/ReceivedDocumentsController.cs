@@ -28,6 +28,7 @@ public sealed class ReceivedDocumentsController(IReceivedDocumentsService servic
 
         var query = new ReceivedDocumentsQuery
         {
+            CompanyId = request.CompanyId,
             User = taxpayerId,
             AdditionalUser = request.AdditionalUser?.Trim(),
             Password = request.Password,

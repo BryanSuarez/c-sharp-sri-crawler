@@ -3,6 +3,7 @@ namespace DescagaCompronanteSRI.Models.Dtos;
 
 public sealed record ReceivedDocumentsQuery
 {
+    public required string CompanyId { get; init; }
     public required string User { get; init; }
     public string? AdditionalUser { get; init; }
     public required string Password { get; init; }

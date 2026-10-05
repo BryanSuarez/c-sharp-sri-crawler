@@ -78,7 +78,8 @@ La aplicación recibe credenciales del SRI y filtros de consulta, abre una sesi�
 │   │   ├── Enums/
 │   │   └── Extraction/
 │   ├── Service/
-│   │   ├── ReceivedDocuments/ (page object, coordinator, strategies, parser, storage)
+│   │   ├── ReceivedDocuments/ (page object, coordinator, strategies, parser)
+│   │   ├── Storage/ (local storage, S3/R2 adapter, keys and configuration)
 │   │   └── ConsultaComprobantesEmitidosService.cs
 │   ├── appsettings.json
 │   └── DescagaCompronanteSRI.csproj
@@ -102,7 +103,7 @@ Cliente HTTP
   -> Portal SRI / JSF
   -> Lectura de tabla
   -> Descarga XML/PDF
-  -> Guardado en wwwroot
+  -> Guardado en el proveedor configurado (recibidos) o wwwroot (emitidos)
   -> Respuesta JSON
 ```
 
@@ -116,20 +117,26 @@ POST /api/received-documents/query
   -> ReceivedDocumentsPage: navega, aplica filtros y lee la página actual
   -> DocumentDownloader: elige la estrategia XML o PDF por DownloadFormat
   -> DocumentParser: extrae XML e informa el resultado de interpretación
-  -> LocalDocumentStorage: guarda el contenido y permite abrir archivos existentes
+  -> IDocumentStorage: guarda y abre contenido mediante LocalDocumentStorage o S3CompatibleDocumentStorage
   -> ReceivedDocumentsResponse: contadores, resultados por documento y errores tipados
 ```
 
 `ReceivedDocumentsPage` encapsula el DOM y las referencias JSF. Esos identificadores no se incluyen en la respuesta pública. Los modelos XML están en `Models/Documents`; sus identificadores C# son ingleses y los atributos de serialización conservan los nombres del SRI.
 
-El procesamiento sigue siendo síncrono, secuencial y limitado a la página visible. La refactorización conserva los tiempos, reintentos y comprobaciones existentes. Paginación completa, corrección regional de importes, validación estricta, S3, deduplicación y concurrencia siguen pendientes.
+El procesamiento sigue siendo síncrono, secuencial y limitado a la página visible. La refactorización conserva los tiempos, reintentos y comprobaciones existentes. Paginación completa, corrección regional de importes, validación estricta, deduplicación y concurrencia siguen pendientes.
 
-Archivos generados (ubicación conservada):
+Nuevas descargas de recibidos:
 
 ```text
-wwwroot/recibidos/{ruc}/{numeroAutorizacion}.xml
-wwwroot/recibidos/{ruc}/{numeroAutorizacion}.pdf
+# Clave dentro del bucket S3/R2
+{companyId}/{taxpayerId}/{year}/{month}/received/{documentType}/{accessKey}.xml
+{companyId}/{taxpayerId}/{year}/{month}/received/{documentType}/{accessKey}.pdf
+
+# Proveedor local
+wwwroot/documents/{companyId}/{taxpayerId}/{year}/{month}/received/{documentType}/{accessKey}.{extension}
 ```
+
+Los archivos anteriores en `wwwroot/recibidos/{ruc}/` permanecen intactos. No se migran automáticamente.
 
 ### Flujo de emitidos
 
@@ -173,6 +180,7 @@ Content-Type: application/json
 
 ```json
 {
+  "companyId": "acme",
   "user": "1234567890001",
   "additionalUser": null,
   "password": "YOUR_SRI_PASSWORD",
@@ -184,7 +192,7 @@ Content-Type: application/json
 }
 ```
 
-`day: 0` consulta todo el mes. `downloadFormat` acepta `xml` o `pdf`. `documentType` acepta `invoice`, `purchaseSettlement`, `creditNote`, `debitNote`, `remissionGuide`, `withholding` o `remissionGuideAlternative`; sus valores internos siguen siendo los códigos del portal. Los enums no aceptan valores numéricos. Usuario, contraseña, año, mes, día, tipo y formato son obligatorios.
+`day: 0` consulta todo el mes. `downloadFormat` acepta `xml` o `pdf`. `documentType` acepta `invoice`, `purchaseSettlement`, `creditNote`, `debitNote`, `remissionGuide`, `withholding` o `remissionGuideAlternative`; sus valores internos siguen siendo los códigos del portal. Los enums no aceptan valores numéricos. Despacho (`companyId`), usuario, contraseña, año, mes, día, tipo y formato son obligatorios. `companyId` acepta de 1 a 64 letras minúsculas, números y guiones; debe empezar y terminar con una letra o número. No se acepta `provider` ni `bucket` en el body.
 
 La ruta `/api/ConsultaComprobantes/consultar` fue retirada. El contrato de recibidos ya no acepta campos JSON en español. Emitidos conserva su contrato anterior.
 
@@ -192,6 +200,7 @@ La ruta `/api/ConsultaComprobantes/consultar` fue retirada. El contrato de recib
 curl --location 'http://localhost:5276/api/received-documents/query' \
   --header 'Content-Type: application/json' \
   --data '{
+    "companyId": "acme",
     "user": "1234567890001",
     "additionalUser": null,
     "password": "YOUR_SRI_PASSWORD",
@@ -261,6 +270,7 @@ La respuesta incluye todos los resultados de la página procesada, incluso filas
 
 ```json
 {
+  "companyId": "acme",
   "taxpayerId": "1234567890001",
   "businessName": "EXAMPLE COMPANY",
   "status": "completed",
@@ -284,7 +294,12 @@ La respuesta incluye todos los resultados de la página procesada, incluso filas
       "downloadFormat": "xml",
       "downloadStatus": "downloaded",
       "parseStatus": "parsed",
-      "filePath": "/app/wwwroot/recibidos/1234567890001/....xml",
+      "storage": {
+        "provider": "s3",
+        "bucket": "configured-bucket",
+        "key": "acme/1234567890001/2026/01/received/invoice/1111111111111111111111111111111111111111111111111.xml"
+      },
+      "filePath": null,
       "parsedDocument": {},
       "errors": []
     }
@@ -297,6 +312,7 @@ La respuesta incluye todos los resultados de la página procesada, incluso filas
 - `downloadStatus`: `downloaded` o `failed`. Descargado significa obtenido y guardado con las comprobaciones actuales; no certifica validez contable ni validación XML estricta.
 - `parseStatus`: `parsed`, `failed`, `unsupported` o `notApplicable` (PDF). Un error de interpretación conserva el archivo descargado y se reporta en `errors` del documento; no cambia su estado de descarga.
 - `parsedDocument`: contenido interpretado con propiedades JSON en inglés. Las guías siguen sin interpretación conectada y producen `unsupported`.
+- `storage`: referencia estable con `provider` (`local`, `s3` o `r2`), `bucket` y `key`. En local, `bucket` es `null` y `filePath` contiene la ruta física; en remoto, `filePath` es `null`. Sin almacenamiento confirmado, `storage` es `null`. No se devuelven URLs firmadas.
 - `metadata` puede ser `null` si la fila no pudo leerse. `rowIndex` comienza en cero.
 - Cada error contiene `code`, `message` y, para errores de documento, `rowIndex`. Los códigos son `loginFailed`, `portalAccessFailed`, `queryFailed`, `rowReadFailed`, `downloadFailed`, `parsingFailed`, `unsupportedDocumentType`, `storageFailed` y `unexpectedError`.
 
@@ -340,6 +356,42 @@ SRI_BROWSER_TESTS=1 dotnet test DescagaCompronanteSRI.Tests/DescagaCompronanteSR
 ```
 
 En Swagger, prueba el nuevo endpoint con credenciales introducidas localmente y repite la consulta con `downloadFormat: "xml"` y `downloadFormat: "pdf"`. Esta comprobación real es independiente de las pruebas simuladas. La API continúa sin autenticación en esta etapa de desarrollo.
+
+## Almacenamiento de recibidos: Local, S3 y R2
+
+El destino se configura exclusivamente en el servidor. Copia `.env.storage.example` a `.env.storage` si aún no tienes este archivo; no sobrescribas credenciales existentes. `.env.storage` está excluido de Git y del contexto de construcción Docker.
+
+| Variable | Uso |
+|---|---|
+| `DOCUMENT_STORAGE_PROVIDER` | `Local` (por defecto), `S3` o `R2`; nombres sin distinción entre mayúsculas y minúsculas. |
+| `DOCUMENT_STORAGE_BUCKET` | Bucket existente, obligatorio para S3/R2. |
+| `DOCUMENT_STORAGE_SERVICE_URL` | Vacío para AWS estándar; endpoint HTTPS obligatorio para R2. |
+| `DOCUMENT_STORAGE_FORCE_PATH_STYLE` | `true` o `false`; por defecto `false`. |
+| `AWS_REGION` | Región AWS obligatoria para S3; R2 utiliza `auto`. |
+| `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` | Credenciales del proveedor elegido, obligatorias para S3/R2. |
+| `AWS_SESSION_TOKEN` | Opcional para credenciales temporales de AWS. |
+
+En `Development`, la aplicación busca `.env.storage` primero en su directorio de contenido y después en su padre inmediato. No modifica las variables globales del proceso. Prioridad: configuración JSON, archivo local, variables de entorno y argumentos de ejecución. En otros entornos se utilizan las variables inyectadas; Docker Compose carga `.env.storage` mediante `env_file` y no lo copia a la imagen. Para utilizar Compose sin almacenamiento remoto, crea el archivo a partir del ejemplo con `DOCUMENT_STORAGE_PROVIDER=Local`.
+
+`DOCUMENT_STORAGE_DEFAULT_ORGANIZATION_ID` se ignora. El despacho siempre llega como `companyId` obligatorio en el body. Debe ser un identificador estable del backend que coordina las descargas; cuando exista autenticación, su resolución se trasladará al contexto autenticado. Actualmente es una convención de organización, no una comprobación de pertenencia a un despacho.
+
+Las claves no empiezan con `/`. Después del contribuyente se incluyen el año y mes de la consulta (`year` y `month` del body), con cuatro y dos dígitos respectivamente, por ejemplo `acme/1719956854001/2026/09/received/invoice/{accessKey}.xml`. Se utiliza el período solicitado, no la fecha de descarga; no se añaden campos nuevos al body. XML y PDF comparten directorio y se distinguen por extensión. Las dos variantes de guía usan `remissionGuide`; los demás tipos conservan sus nombres camelCase. Se utiliza el usuario normalizado (10 o 13 dígitos) como contribuyente, sin convertir una cédula a RUC.
+
+El archivo se sube desde el stream descargado, sin una copia local definitiva cuando se usa S3/R2. El SDK usa reintentos estándar, con un máximo de dos reintentos. Un error del proveedor produce `storageFailed` y permite continuar con otros documentos; no existe fallback silencioso al disco. Una clave de acceso inválida (distinta de 49 dígitos ASCII) también produce un error de almacenamiento. Repetir una descarga sobrescribe la misma clave; si el bucket tiene versionado, conserva sus versiones según su configuración.
+
+Una configuración incompleta o un proveedor desconocido impide el arranque con un mensaje controlado. La aplicación no crea buckets, modifica permisos ni solicita acceso público. Las credenciales requieren permiso de escritura y lectura de objetos en el destino configurado.
+
+Para cambiar S3 por R2, actualiza proveedor, endpoint, bucket y credenciales, y reinicia la API. Las nuevas operaciones usarán el nuevo destino. Los archivos anteriores no se transfieren automáticamente; sus referencias conservan el proveedor y bucket originales. Esta implementación no resuelve lecturas simultáneas de proveedores anteriores ni añade endpoints de descarga. Emitidos continúa utilizando su almacenamiento local actual.
+
+### Prueba real del almacenamiento
+
+Las pruebas normales usan sustitutos del cliente S3 y no acceden al bucket. Para probar el proveedor configurado con archivos sintéticos XML/PDF:
+
+```bash
+SRI_STORAGE_TESTS=1 dotnet test DescagaCompronanteSRI.Tests/DescagaCompronanteSRI.Tests.csproj --configuration Release --filter FullyQualifiedName~StorageIntegrationTests --logger "console;verbosity=normal"
+```
+
+Esta prueba requiere permisos de escritura, lectura y eliminación (incluida eliminación de versiones si el bucket tiene versionado). Utiliza un prefijo único `storage-test-<uuid>/`, compara bytes y tipo de contenido, y limpia únicamente sus propios objetos. No accede al SRI ni usa documentos de contribuyentes.
 
 ## Ejecutar localmente
 
@@ -438,7 +490,8 @@ docker compose restart
 Los comprobantes quedan bajo:
 
 ```text
-wwwroot/recibidos/{ruc}/
+wwwroot/documents/{companyId}/{taxpayerId}/{year}/{month}/received/{documentType}/
+wwwroot/recibidos/{ruc}/  # Descargas anteriores
 wwwroot/emitidos/{ruc}/
 ```
 

@@ -1,9 +1,11 @@
-using DescagaCompronanteSRI.Models.Enums;
 using DescagaCompronanteSRI.Models.Extraction;
+using DescagaCompronanteSRI.Models.Storage;
+
 namespace DescagaCompronanteSRI.Contracts;
 
 public interface IDocumentStorage
 {
-    Task<string> SaveAsync(string taxpayerId, string authorizationNumber, DocumentContent content);
-    Task<Stream> OpenReadAsync(string taxpayerId, string authorizationNumber, DownloadFormat format);
+    Task<DocumentStorageReference> SaveAsync(
+        DocumentStorageContext context, DocumentContent content, CancellationToken cancellationToken = default);
+    Task<Stream> OpenReadAsync(DocumentStorageReference reference, CancellationToken cancellationToken = default);
 }
