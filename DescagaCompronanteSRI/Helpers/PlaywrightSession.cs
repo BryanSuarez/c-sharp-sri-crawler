@@ -1,4 +1,4 @@
-﻿using Microsoft.Playwright;
+using Microsoft.Playwright;
 using System;
 using System.Threading.Tasks;
 
@@ -20,7 +20,12 @@ namespace DescagaCompronanteSRI.Helpers
         {
             Console.WriteLine("[Session] Iniciando Playwright...");
             var s = new PlaywrightSession();
-            await s.InitAsync();
+            try { await s.InitAsync(); }
+            catch
+            {
+                await s.DisposeAsync();
+                throw;
+            }
             Console.WriteLine("[Session] Sesión lista.");
             return s;
         }

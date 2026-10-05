@@ -2,6 +2,9 @@ using Microsoft.Extensions.FileProviders;
 using Microsoft.OpenApi.Models;
 using DescagaCompronanteSRI.Contracts;
 using DescagaCompronanteSRI.Services;
+using DescagaCompronanteSRI.Services.ReceivedDocuments;
+using DescagaCompronanteSRI.Models.Enums;
+using Microsoft.OpenApi.Any;
 
 var builder = WebApplication.CreateBuilder(new WebApplicationOptions
 {
@@ -36,7 +39,14 @@ builder.Services.AddScoped<ISriLoginService, SriLoginService>();
 builder.Services.AddScoped<ISriPortalSessionService, SriPortalSessionService>();
 builder.Services.AddScoped<IPdfDownloadService, PdfDownloadService>();
 
-builder.Services.AddScoped<IReceivedDocumentsService, ConsultaComprobantesService>();
+builder.Services.AddScoped<IReceivedDocumentsSessionFactory, ReceivedDocumentsSessionFactory>();
+builder.Services.AddScoped<IReceivedDocumentsPage, ReceivedDocumentsPage>();
+builder.Services.AddScoped<IDocumentParser, DocumentParser>();
+builder.Services.AddScoped<IDocumentDownloadStrategy, XmlDocumentDownloadStrategy>();
+builder.Services.AddScoped<IDocumentDownloadStrategy, PdfDocumentDownloadStrategy>();
+builder.Services.AddScoped<IDocumentDownloader, DocumentDownloader>();
+builder.Services.AddScoped<IDocumentStorage, LocalDocumentStorage>();
+builder.Services.AddScoped<IReceivedDocumentsService, ReceivedDocumentsService>();
 
 builder.Services.AddScoped<IIssuedDocumentsService, ConsultaComprobantesEmitidosService>();
 
@@ -44,6 +54,12 @@ builder.Services.AddScoped<IIssuedDocumentsService, ConsultaComprobantesEmitidos
 
 builder.Services.AddSwaggerGen(c =>
 {
+    c.MapType<DocumentType>(() => EnumSchema<DocumentType>());
+    c.MapType<DownloadFormat>(() => EnumSchema<DownloadFormat>());
+    c.MapType<ExtractionStatus>(() => EnumSchema<ExtractionStatus>());
+    c.MapType<DocumentDownloadStatus>(() => EnumSchema<DocumentDownloadStatus>());
+    c.MapType<DocumentParseStatus>(() => EnumSchema<DocumentParseStatus>());
+    c.MapType<ExtractionErrorCode>(() => EnumSchema<ExtractionErrorCode>());
     c.SwaggerDoc("v1", new OpenApiInfo { Title = "Descarga de Comprobantes", Version = "v1" });
     c.AddSecurityDefinition("ApiKey", new OpenApiSecurityScheme
     {
@@ -90,3 +106,12 @@ app.UseAuthorization();
 app.MapControllers();
 
 app.Run();
+
+static OpenApiSchema EnumSchema<T>() where T : struct, Enum => new()
+{
+    Type = "string",
+    Enum = Enum.GetNames<T>().Select(name => (IOpenApiAny)new OpenApiString(
+        System.Text.Json.JsonNamingPolicy.CamelCase.ConvertName(name))).ToList()
+};
+
+public partial class Program { }

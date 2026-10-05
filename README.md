@@ -28,7 +28,7 @@ git commit -m "chore: quitar wwwroot del control de versiones"
 
 | Flujo | Endpoint | Qué hace |
 |---|---|---|
-| Recibidos | `POST /api/ConsultaComprobantes/consultar` | Consulta comprobantes recibidos y descarga XML o PDF según `descargarXml`. |
+| Recibidos | `POST /api/received-documents/query` | Consulta la página actual de recibidos y descarga XML o PDF según `downloadFormat`. |
 | Emitidos | `POST /api/SriEmitidos/consultar` | Consulta comprobantes emitidos autorizados y descarga PDFs. |
 | Descargar PDF emitido guardado | `GET /api/SriEmitidos/descargar/{ruc}/{claveAcceso}` | Devuelve un PDF emitido previamente descargado. |
 
@@ -69,16 +69,17 @@ La aplicación recibe credenciales del SRI y filtros de consulta, abre una sesi�
 ├── DescagaCompronanteSRI/
 │   ├── Program.cs
 │   ├── Controllers/
-│   │   ├── DescargaComprobantesController.cs
+│   │   ├── ReceivedDocumentsController.cs
 │   │   └── SriEmitidosController.cs
 │   ├── Helpers/
-│   │   ├── PlaywrightSession.cs
-│   │   └── XmlHelper.cs
+│   │   └── PlaywrightSession.cs
 │   ├── Models/
+│   │   ├── Documents/ (modelos XML en inglés)
+│   │   ├── Enums/
+│   │   └── Extraction/
 │   ├── Service/
-│   │   ├── ConsultaComprobantes.cs
-│   │   ├── ConsultaComprobantesEmitidosService.cs
-│   │   └── modelos XML por tipo de comprobante
+│   │   ├── ReceivedDocuments/ (page object, coordinator, strategies, parser, storage)
+│   │   └── ConsultaComprobantesEmitidosService.cs
 │   ├── appsettings.json
 │   └── DescagaCompronanteSRI.csproj
 ├── TwoCaptcha/
@@ -108,18 +109,22 @@ Cliente HTTP
 ### Flujo de recibidos
 
 ```text
-POST /api/ConsultaComprobantes/consultar
-  -> sanitiza usuario como RUC
-  -> crea destino wwwroot/recibidos/{ruc}
-  -> login SRI
-  -> sesión JSF de recibidos
-  -> aplica filtros año/mes/día/tipo
-  -> lee tabla de comprobantes recibidos
-  -> descarga XML o PDF
-  -> retorna UsuarioSri con comprobantes descargados
+POST /api/received-documents/query
+  -> ReceivedDocumentsController: valida la solicitud en inglés
+  -> ReceivedDocumentsService: coordina una extracción
+  -> ReceivedDocumentsSession: reutiliza login y acceso al portal; libera la sesión
+  -> ReceivedDocumentsPage: navega, aplica filtros y lee la página actual
+  -> DocumentDownloader: elige la estrategia XML o PDF por DownloadFormat
+  -> DocumentParser: extrae XML e informa el resultado de interpretación
+  -> LocalDocumentStorage: guarda el contenido y permite abrir archivos existentes
+  -> ReceivedDocumentsResponse: contadores, resultados por documento y errores tipados
 ```
 
-Archivos generados:
+`ReceivedDocumentsPage` encapsula el DOM y las referencias JSF. Esos identificadores no se incluyen en la respuesta pública. Los modelos XML están en `Models/Documents`; sus identificadores C# son ingleses y los atributos de serialización conservan los nombres del SRI.
+
+El procesamiento sigue siendo síncrono, secuencial y limitado a la página visible. La refactorización conserva los tiempos, reintentos y comprobaciones existentes. Paginación completa, corrección regional de importes, validación estricta, S3, deduplicación y concurrencia siguen pendientes.
+
+Archivos generados (ubicación conservada):
 
 ```text
 wwwroot/recibidos/{ruc}/{numeroAutorizacion}.xml
@@ -162,46 +167,41 @@ wwwroot/emitidos/{ruc}/{claveAcceso}.pdf
 ### Consultar comprobantes recibidos
 
 ```http
-POST /api/ConsultaComprobantes/consultar
+POST /api/received-documents/query
 Content-Type: application/json
 ```
 
-Body:
-
 ```json
 {
-  "usuario": "1234567890001",
-  "usuarioAdicional": null,
-  "password": "TU_PASSWORD_SRI",
-  "dia": 1,
-  "anio": "2026",
-  "mes": 1,
-  "comprobante": 1,
-  "descargarXml": true
+  "user": "1234567890001",
+  "additionalUser": null,
+  "password": "YOUR_SRI_PASSWORD",
+  "year": 2026,
+  "month": 1,
+  "day": 0,
+  "documentType": "invoice",
+  "downloadFormat": "xml"
 }
 ```
 
-Ejemplo `curl`:
+`day: 0` consulta todo el mes. `downloadFormat` acepta `xml` o `pdf`. `documentType` acepta `invoice`, `purchaseSettlement`, `creditNote`, `debitNote`, `remissionGuide`, `withholding` o `remissionGuideAlternative`; sus valores internos siguen siendo los códigos del portal. Los enums no aceptan valores numéricos. Usuario, contraseña, año, mes, día, tipo y formato son obligatorios.
+
+La ruta `/api/ConsultaComprobantes/consultar` fue retirada. El contrato de recibidos ya no acepta campos JSON en español. Emitidos conserva su contrato anterior.
 
 ```bash
-curl --location 'http://localhost:5276/api/ConsultaComprobantes/consultar' \
+curl --location 'http://localhost:5276/api/received-documents/query' \
   --header 'Content-Type: application/json' \
   --data '{
-    "usuario": "1234567890001",
-    "usuarioAdicional": null,
-    "password": "TU_PASSWORD_SRI",
-    "dia": 1,
-    "anio": "2026",
-    "mes": 1,
-    "comprobante": 1,
-    "descargarXml": true
+    "user": "1234567890001",
+    "additionalUser": null,
+    "password": "YOUR_SRI_PASSWORD",
+    "year": 2026,
+    "month": 1,
+    "day": 0,
+    "documentType": "invoice",
+    "downloadFormat": "xml"
   }'
 ```
-
-Campo clave:
-
-- `descargarXml: true` descarga XML.
-- `descargarXml: false` descarga PDF.
 
 ### Consultar comprobantes emitidos
 
@@ -257,27 +257,50 @@ curl --location 'http://localhost:5276/api/SriEmitidos/descargar/1234567890001/C
 
 ### Recibidos
 
-El endpoint de recibidos devuelve un objeto con datos del contribuyente y lista de comprobantes descargados.
-
-Ejemplo simplificado:
+La respuesta incluye todos los resultados de la página procesada, incluso filas que no pudieron leerse o descargarse:
 
 ```json
 {
-  "ruc": "1234567890001",
-  "razonSocial": "EMPRESA EJEMPLO S.A.",
-  "totalComprobantes": 2,
-  "comprobantes": [
+  "taxpayerId": "1234567890001",
+  "businessName": "EXAMPLE COMPANY",
+  "status": "completed",
+  "discoveredCount": 1,
+  "downloadedCount": 1,
+  "failedCount": 0,
+  "documents": [
     {
-      "razonSocial": "PROVEEDOR EJEMPLO",
-      "tipoDocumento": "FACTURA",
-      "numeroAutorizacion": "...",
-      "fechaEmision": "01/01/2026",
-      "importeTotal": 100.00,
-      "rutaArchivo": "/app/wwwroot/recibidos/1234567890001/....xml"
+      "rowIndex": 0,
+      "metadata": {
+        "supplierBusinessName": "EXAMPLE SUPPLIER",
+        "documentTypeName": "Factura",
+        "authorizationNumber": "...",
+        "issuedAt": "01/01/2026",
+        "authorizedAt": "01/01/2026",
+        "amount": 100.00,
+        "taxes": 15.00,
+        "total": 115.00,
+        "relatedDocuments": ""
+      },
+      "downloadFormat": "xml",
+      "downloadStatus": "downloaded",
+      "parseStatus": "parsed",
+      "filePath": "/app/wwwroot/recibidos/1234567890001/....xml",
+      "parsedDocument": {},
+      "errors": []
     }
-  ]
+  ],
+  "errors": []
 }
 ```
+
+- `status`: `completed`, `partial`, `failed` o `noDocuments`. Describe el resultado de la página actual, no garantiza cobertura de todas las páginas del SRI.
+- `downloadStatus`: `downloaded` o `failed`. Descargado significa obtenido y guardado con las comprobaciones actuales; no certifica validez contable ni validación XML estricta.
+- `parseStatus`: `parsed`, `failed`, `unsupported` o `notApplicable` (PDF). Un error de interpretación conserva el archivo descargado y se reporta en `errors` del documento; no cambia su estado de descarga.
+- `parsedDocument`: contenido interpretado con propiedades JSON en inglés. Las guías siguen sin interpretación conectada y producen `unsupported`.
+- `metadata` puede ser `null` si la fila no pudo leerse. `rowIndex` comienza en cero.
+- Cada error contiene `code`, `message` y, para errores de documento, `rowIndex`. Los códigos son `loginFailed`, `portalAccessFailed`, `queryFailed`, `rowReadFailed`, `downloadFailed`, `parsingFailed`, `unsupportedDocumentType`, `storageFailed` y `unexpectedError`.
+
+Una consulta ejecutada devuelve HTTP `200`, incluso si todos sus documentos fallaron; el resultado lo indica `status`. Errores previos a la ejecución de la consulta devuelven `500` con resultado tipado. Solicitudes inválidas devuelven `400`.
 
 ### Emitidos
 
@@ -301,6 +324,22 @@ Ejemplo simplificado:
   ]
 }
 ```
+
+## Verificar la refactorización de recibidos
+
+Las pruebas de coordinación y contrato HTTP no acceden al SRI:
+
+```bash
+dotnet test DescagaCompronanteSRI.Tests/DescagaCompronanteSRI.Tests.csproj --configuration Release
+```
+
+La prueba de navegador usa un portal simulado local y necesita Google Chrome. Para ejecutarla junto con toda la suite:
+
+```bash
+SRI_BROWSER_TESTS=1 dotnet test DescagaCompronanteSRI.Tests/DescagaCompronanteSRI.Tests.csproj --configuration Release
+```
+
+En Swagger, prueba el nuevo endpoint con credenciales introducidas localmente y repite la consulta con `downloadFormat: "xml"` y `downloadFormat: "pdf"`. Esta comprobación real es independiente de las pruebas simuladas. La API continúa sin autenticación en esta etapa de desarrollo.
 
 ## Ejecutar localmente
 
@@ -442,7 +481,7 @@ Limitaciones actuales:
 - Emitidos descarga PDF; no hay XML emitido implementado en el flujo actual.
 - Recibidos no tiene endpoint dedicado de descarga por archivo guardado.
 - La automatización depende de selectores internos del portal SRI; cambios del portal pueden romper el flujo.
-- No se observaron tests automatizados versionados en el repositorio.
+- Existen pruebas automatizadas de validación, modelos XML, coordinación, almacenamiento y contratos HTTP; las pruebas reales del SRI siguen requiriendo credenciales introducidas localmente.
 - Swagger está habilitado siempre en `Program.cs`.
 
 ## Troubleshooting
