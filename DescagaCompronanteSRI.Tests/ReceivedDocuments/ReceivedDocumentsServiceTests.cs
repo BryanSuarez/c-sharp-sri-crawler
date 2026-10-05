@@ -1,4 +1,5 @@
 using System.Text;
+using Microsoft.Extensions.Options;
 using DescagaCompronanteSRI.Contracts;
 using DescagaCompronanteSRI.Models.Dtos;
 using DescagaCompronanteSRI.Models.Enums;
@@ -187,6 +188,151 @@ public class ReceivedDocumentsServiceTests
         Assert.StartsWith("acme/1790012345001/2025/01/received/invoice/", response.Documents[0].Storage!.Key);
     }
 
+    private static ReceivedDocumentsPageSnapshot Snapshot(int number, bool? next, int? total, params int[] keys) =>
+        new(number, next, total, keys.Select((key, index) => new ReceivedDocumentRowSnapshot(index,
+            OperationResult<ReceivedDocumentReference>.Success(new(
+                new ReceivedDocumentMetadata { AuthorizationNumber = key.ToString().PadLeft(49, '0') },
+                $"xml-{number}-{index}", $"pdf-{number}-{index}", "detail")), $"key:{key}")).ToArray());
+
+    [Theory]
+    [InlineData(1)]
+    [InlineData(2)]
+    public async Task Query_TraversesFullAndPartialFinalPages(int lastSize)
+    {
+        var scenario = new Scenario { Pages = [Snapshot(1, true, 2 + lastSize, 1, 2),
+            Snapshot(2, false, 2 + lastSize, Enumerable.Range(3, lastSize).ToArray())] };
+        var result = await scenario.Service.QueryAsync(Query());
+        Assert.Equal(ExtractionStatus.Completed, result.Status);
+        Assert.Equal(PaginationStatus.Completed, result.Pagination.Status);
+        Assert.Equal(2, result.Pagination.PagesProcessed);
+        Assert.Equal(2 + lastSize, result.DownloadedCount);
+        Assert.Equal(2, result.Documents[2].PageNumber);
+        Assert.Equal(0, result.Documents[2].RowIndex);
+        Assert.True(scenario.Session.Disposed);
+    }
+
+    [Fact]
+    public async Task Query_OverlappingDocumentsAreSkippedButNewDocumentsAreSaved()
+    {
+        var scenario = new Scenario { Pages = [Snapshot(1, true, 4, 1, 2), Snapshot(2, false, 4, 2, 3)] };
+        var result = await scenario.Service.QueryAsync(Query());
+        Assert.Equal(ExtractionStatus.Partial, result.Status);
+        Assert.Equal(PaginationStatus.Incomplete, result.Pagination.Status);
+        Assert.Equal(1, result.Pagination.DuplicateCount);
+        Assert.Equal(3, result.DiscoveredCount);
+        Assert.Equal(3, scenario.SaveCount);
+        Assert.Contains(result.Errors, e => e.Code == ExtractionErrorCode.DuplicateDocument && e.PageNumber == 2 && e.RowIndex == 0);
+    }
+
+    [Theory]
+    [InlineData(2, ExtractionErrorCode.RepeatedPage)]
+    [InlineData(1, ExtractionErrorCode.PaginationInconsistent)]
+    [InlineData(3, ExtractionErrorCode.PaginationInconsistent)]
+    public async Task Query_RepeatedSkippedOrBackwardPagesStop(int secondPage, ExtractionErrorCode code)
+    {
+        var scenario = new Scenario { Pages = [Snapshot(1, true, 4, 1, 2), Snapshot(secondPage, true, 4, 2, 1)] };
+        var result = await scenario.Service.QueryAsync(Query());
+        Assert.Equal(ExtractionStatus.Partial, result.Status);
+        Assert.Equal(1, result.Pagination.PagesProcessed);
+        Assert.Equal(2, scenario.SaveCount);
+        Assert.Contains(result.Errors, e => e.Code == code);
+    }
+
+    [Theory]
+    [InlineData(5, 4, false)]
+    [InlineData(4, 5, false)]
+    [InlineData(4, 4, true)]
+    public async Task Query_ChangingTotalsPrematureEndOrEmptyPageAreIncomplete(int firstTotal, int secondTotal, bool empty)
+    {
+        var result = await new Scenario { Pages = [Snapshot(1, true, firstTotal, 1, 2),
+            Snapshot(2, false, secondTotal, empty ? [] : [3, 4])] }.Service.QueryAsync(Query());
+        Assert.Equal(PaginationStatus.Incomplete, result.Pagination.Status);
+        Assert.Equal(ExtractionStatus.Partial, result.Status);
+        Assert.Contains(result.Errors, e => e.Code == ExtractionErrorCode.PaginationInconsistent);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Query_NavigationFailurePreservesResultsAndDisposesSession(bool throws)
+    {
+        var scenario = new Scenario { Pages = [Snapshot(1, true, 2, 1)], FailNavigation = !throws, ThrowOnNavigation = throws };
+        var result = await scenario.Service.QueryAsync(Query());
+        Assert.True(result.QuerySucceeded);
+        Assert.Equal(ExtractionStatus.Partial, result.Status);
+        Assert.Equal(PaginationStatus.Incomplete, result.Pagination.Status);
+        Assert.Single(result.Documents);
+        Assert.NotNull(result.Documents[0].Storage);
+        Assert.True(scenario.Session.Disposed);
+        Assert.Contains(result.Errors, e => e.PageNumber == 2);
+        Assert.All(scenario.Contents, c => Assert.False(c.Stream.CanRead));
+    }
+
+    [Fact]
+    public async Task Query_UnknownPaginationCannotClaimCompletion()
+    {
+        var result = await new Scenario { Pages = [Snapshot(1, null, null, 1)] }.Service.QueryAsync(Query());
+        Assert.Equal(ExtractionStatus.Partial, result.Status);
+        Assert.Contains(result.Errors, e => e.Code == ExtractionErrorCode.PaginationStateUnknown);
+    }
+
+    [Theory]
+    [InlineData(true, PaginationStatus.Incomplete)]
+    [InlineData(false, PaginationStatus.Completed)]
+    public async Task Query_PageLimitOnlyFailsWhenPagesRemain(bool next, PaginationStatus status)
+    {
+        var scenario = new Scenario { MaxPages = 1, Pages = [Snapshot(1, next, null, 1)] };
+        var result = await scenario.Service.QueryAsync(Query());
+        Assert.Equal(status, result.Pagination.Status);
+        Assert.Equal(0, scenario.Moves);
+        Assert.Equal(next, result.Errors.Any(e => e.Code == ExtractionErrorCode.PaginationLimitReached));
+    }
+
+    [Fact]
+    public async Task Query_DuplicateKeepsTheFirstFailureInsteadOfDownloadingItAgain()
+    {
+        var scenario = new Scenario { Pages = [Snapshot(1, true, 3, 1), Snapshot(2, false, 3, 1, 2)], FailedDownloadRow = 0 };
+        var result = await scenario.Service.QueryAsync(Query());
+        Assert.Equal(2, scenario.DownloadCount);
+        Assert.Equal(DocumentDownloadStatus.Failed, result.Documents[0].DownloadStatus);
+        Assert.Equal(1, result.Documents[0].PageNumber);
+        Assert.Equal(1, result.Pagination.DuplicateCount);
+        Assert.Equal(1, result.FailedCount);
+        Assert.Equal(1, result.DownloadedCount);
+        Assert.Equal(ExtractionStatus.Partial, result.Status);
+    }
+
+    [Fact]
+    public async Task Query_UnconfirmedEmptyPageCannotReturnNoDocuments()
+    {
+        var result = await new Scenario { Pages = [Snapshot(1, false, null)] }.Service.QueryAsync(Query());
+        Assert.Equal(ExtractionStatus.Failed, result.Status);
+        Assert.Equal(PaginationStatus.Incomplete, result.Pagination.Status);
+        Assert.True(result.QuerySucceeded);
+    }
+
+    [Fact]
+    public async Task Query_NoSavedDocumentsAndIncompleteTraversalIsFailed()
+    {
+        var result = await new Scenario { Pages = [Snapshot(1, null, null, 1)], FailedDownloadRow = 0 }.Service.QueryAsync(Query());
+        Assert.Equal(ExtractionStatus.Failed, result.Status);
+        Assert.True(result.QuerySucceeded);
+        Assert.Equal(result.DiscoveredCount, result.DownloadedCount + result.FailedCount);
+    }
+
+    [Fact]
+    public async Task Query_UnreadableRowKeepsItsPageAndPosition()
+    {
+        var second = Snapshot(2, false, 2) with { Rows = [new(0,
+            OperationResult<ReceivedDocumentReference>.Failure(ExtractionErrorCode.RowReadFailed, "Bad row"), "unreadable")] };
+        var result = await new Scenario { Pages = [Snapshot(1, true, 2, 1), second] }.Service.QueryAsync(Query());
+        Assert.Equal(2, result.DiscoveredCount);
+        Assert.Equal(PaginationStatus.Completed, result.Pagination.Status);
+        Assert.Equal(ExtractionStatus.Partial, result.Status);
+        Assert.Equal(2, result.Documents[1].Errors[0].PageNumber);
+        Assert.Equal(0, result.Documents[1].Errors[0].RowIndex);
+    }
+
     internal static ReceivedDocumentsQuery Query(DownloadFormat format = DownloadFormat.Xml) => new()
     {
         CompanyId = "acme", User = "1790012345001", Password = "test-only", Year = 2026, Month = 6, Day = 0,
@@ -196,6 +342,11 @@ public class ReceivedDocumentsServiceTests
     private sealed class Scenario : IReceivedDocumentsSessionFactory, IReceivedDocumentsPage,
         IDocumentDownloader, IDocumentParser, IDocumentStorage
     {
+        public IReadOnlyList<ReceivedDocumentsPageSnapshot>? Pages { get; init; }
+        public int MaxPages { get; init; } = 1000;
+        public bool FailNavigation { get; init; }
+        public bool ThrowOnNavigation { get; init; }
+        public int Moves { get; private set; }
         public int RowCount { get; init; } = 1;
         public int? FailedReadRow { get; init; }
         public int? FailedDownloadRow { get; init; }
@@ -212,21 +363,30 @@ public class ReceivedDocumentsServiceTests
         public List<DocumentContent> Contents { get; } = [];
         public FakeSession Session { get; private set; } = null!;
         public ReceivedDocumentsService Service => new(this, this, this, this, this,
-            NullLogger<ReceivedDocumentsService>.Instance);
+            NullLogger<ReceivedDocumentsService>.Instance, Options.Create(new ReceivedDocumentsPaginationOptions { MaxPages = MaxPages }));
         public IReceivedDocumentsSession Create() => Session = new FakeSession(FailureStage == "login");
 
         public Task<bool> OpenAsync(IReceivedDocumentsSession session) =>
             ThrowOnOpen ? throw new InvalidOperationException("secret") : Task.FromResult(FailureStage != "portal");
-        public Task<OperationResult<int>> QueryAsync(IReceivedDocumentsSession session, ReceivedDocumentsQuery query) =>
+        public Task<OperationResult<ReceivedDocumentsPageSnapshot>> QueryAsync(IReceivedDocumentsSession session, ReceivedDocumentsQuery query) =>
             Task.FromResult(FailureStage == "query"
-                ? OperationResult<int>.Failure(ExtractionErrorCode.QueryFailed, "Query failed.")
-                : OperationResult<int>.Success(RowCount));
-        public Task<OperationResult<ReceivedDocumentReference>> ReadRowAsync(IReceivedDocumentsSession session, int rowIndex) =>
-            Task.FromResult(FailedReadRow == rowIndex
-                ? OperationResult<ReceivedDocumentReference>.Failure(ExtractionErrorCode.RowReadFailed, "Row failed.")
-                : OperationResult<ReceivedDocumentReference>.Success(new(
-                    new ReceivedDocumentMetadata { AuthorizationNumber = InvalidAccessKey ? "invalid" : rowIndex.ToString().PadLeft(49, '0') },
-                    "xml", "pdf", "detail")));
+                ? OperationResult<ReceivedDocumentsPageSnapshot>.Failure(ExtractionErrorCode.QueryFailed, "Query failed.")
+                : OperationResult<ReceivedDocumentsPageSnapshot>.Success(Pages?[0] ?? new(1, false, RowCount,
+                    Enumerable.Range(0, RowCount).Select(index => new ReceivedDocumentRowSnapshot(index,
+                        FailedReadRow == index
+                            ? OperationResult<ReceivedDocumentReference>.Failure(ExtractionErrorCode.RowReadFailed, "Row failed.")
+                            : OperationResult<ReceivedDocumentReference>.Success(new(
+                                new ReceivedDocumentMetadata { AuthorizationNumber = InvalidAccessKey ? "invalid" : index.ToString().PadLeft(49, '0') },
+                                "xml", "pdf", "detail")), index.ToString())).ToArray(), RowCount == 0)));
+
+        public Task<OperationResult<ReceivedDocumentsPageSnapshot>> MoveNextAsync(IReceivedDocumentsSession session, ReceivedDocumentsPageSnapshot current)
+        {
+            Moves++;
+            if (ThrowOnNavigation) throw new IOException("Navigation exception");
+            return Task.FromResult(FailNavigation
+                ? OperationResult<ReceivedDocumentsPageSnapshot>.Failure(ExtractionErrorCode.PaginationNavigationFailed, "Navigation failed.")
+                : OperationResult<ReceivedDocumentsPageSnapshot>.Success(Pages![Moves]));
+        }
 
         public Task<OperationResult<DocumentContent>> DownloadAsync(
             IReceivedDocumentsSession session, ReceivedDocumentReference document, DownloadFormat format)

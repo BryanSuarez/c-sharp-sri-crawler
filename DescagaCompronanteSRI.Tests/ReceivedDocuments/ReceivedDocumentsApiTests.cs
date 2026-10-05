@@ -41,7 +41,11 @@ public sealed class ReceivedDocumentsApiTests : IClassFixture<ReceivedDocumentsA
         Assert.Equal("acme", body.GetProperty("companyId").GetString());
         Assert.Equal("completed", body.GetProperty("status").GetString());
         Assert.Equal(1, body.GetProperty("downloadedCount").GetInt32());
+        Assert.Equal("completed", body.GetProperty("pagination").GetProperty("status").GetString());
+        Assert.Equal(1, body.GetProperty("pagination").GetProperty("pagesProcessed").GetInt32());
+        Assert.Equal(0, body.GetProperty("pagination").GetProperty("duplicateCount").GetInt32());
         var document = body.GetProperty("documents")[0];
+        Assert.Equal(1, document.GetProperty("pageNumber").GetInt32());
         Assert.Equal("xml", document.GetProperty("downloadFormat").GetString());
         Assert.Equal("downloaded", document.GetProperty("downloadStatus").GetString());
         Assert.Equal("parsed", document.GetProperty("parseStatus").GetString());
@@ -56,6 +60,25 @@ public sealed class ReceivedDocumentsApiTests : IClassFixture<ReceivedDocumentsA
         Assert.Equal(DocumentType.Invoice, _factory.Received.LastQuery!.DocumentType);
         Assert.Equal(DownloadFormat.Xml, _factory.Received.LastQuery.DownloadFormat);
         Assert.Equal(0, _factory.Received.LastQuery.Day);
+    }
+
+    [Fact]
+    public async Task Query_IncompleteTraversalReturns200WithPartialResultsAndPageLocation()
+    {
+        _factory.Received.Incomplete = true;
+        try
+        {
+            var response = await Post(ValidJson);
+            Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+            var body = JsonDocument.Parse(await response.Content.ReadAsStringAsync()).RootElement;
+            Assert.Equal("partial", body.GetProperty("status").GetString());
+            Assert.Equal("incomplete", body.GetProperty("pagination").GetProperty("status").GetString());
+            Assert.Equal(1, body.GetProperty("discoveredCount").GetInt32());
+            Assert.Equal("paginationNavigationFailed", body.GetProperty("errors")[0].GetProperty("code").GetString());
+            Assert.Equal(2, body.GetProperty("errors")[0].GetProperty("pageNumber").GetInt32());
+            Assert.Equal(JsonValueKind.Null, body.GetProperty("errors")[0].GetProperty("rowIndex").ValueKind);
+        }
+        finally { _factory.Received.Incomplete = false; }
     }
 
     [Fact]
@@ -173,6 +196,19 @@ public sealed class ReceivedDocumentsApiTests : IClassFixture<ReceivedDocumentsA
         Assert.True(body.TryGetProperty("comprobantes", out _));
     }
 
+    [Theory]
+    [InlineData("MaxPages", "0")]
+    [InlineData("NavigationAttempts", "4")]
+    [InlineData("TransitionTimeoutMilliseconds", "60001")]
+    [InlineData("RetryDelayMilliseconds", "-1")]
+    public void Startup_RejectsInvalidPaginationLimits(string option, string value)
+    {
+        using var factory = _factory.WithWebHostBuilder(builder =>
+            builder.ConfigureAppConfiguration((_, config) => config.AddInMemoryCollection(
+                new Dictionary<string, string?> { [$"ReceivedDocumentsPagination:{option}"] = value })));
+        Assert.Throws<Microsoft.Extensions.Options.OptionsValidationException>(() => factory.CreateClient());
+    }
+
     [Fact]
     public async Task SwaggerDocumentsStringEnumsAndNewRoute()
     {
@@ -188,6 +224,14 @@ public sealed class ReceivedDocumentsApiTests : IClassFixture<ReceivedDocumentsA
         Assert.Equal("string", properties.GetProperty("documentType").GetProperty("type").GetString());
         Assert.Contains("invoice", properties.GetProperty("documentType").GetProperty("enum").EnumerateArray().Select(v => v.GetString()));
         Assert.Contains("xml", properties.GetProperty("downloadFormat").GetProperty("enum").EnumerateArray().Select(v => v.GetString()));
+        var schemas = spec.GetProperty("components").GetProperty("schemas");
+        var pagination = schemas.GetProperty("PaginationProgress").GetProperty("properties");
+        Assert.Equal("string", pagination.GetProperty("status").GetProperty("type").GetString());
+        Assert.Equal(new[] { "notStarted", "completed", "incomplete" },
+            pagination.GetProperty("status").GetProperty("enum").EnumerateArray().Select(v => v.GetString()));
+        Assert.True(schemas.GetProperty("ReceivedDocumentsResponse").GetProperty("properties").TryGetProperty("pagination", out _));
+        Assert.True(schemas.GetProperty("ReceivedDocumentResponse").GetProperty("properties").TryGetProperty("pageNumber", out _));
+        Assert.True(schemas.GetProperty("ExtractionError").GetProperty("properties").TryGetProperty("pageNumber", out _));
     }
 
     private Task<HttpResponseMessage> Post(string json) =>
@@ -223,6 +267,7 @@ public sealed class ReceivedDocumentsApiTests : IClassFixture<ReceivedDocumentsA
     public sealed class StubReceivedService : IReceivedDocumentsService
     {
         public bool QuerySucceeded { get; set; } = true;
+        public bool Incomplete { get; set; }
         public int Calls { get; private set; }
         public ReceivedDocumentsQuery? LastQuery { get; private set; }
         public Task<ReceivedDocumentsResponse> QueryAsync(ReceivedDocumentsQuery query)
@@ -232,9 +277,17 @@ public sealed class ReceivedDocumentsApiTests : IClassFixture<ReceivedDocumentsA
             var result = new ReceivedDocumentsResponse
             {
                 CompanyId = query.CompanyId, TaxpayerId = query.User, QuerySucceeded = QuerySucceeded,
-                Status = QuerySucceeded ? ExtractionStatus.Completed : ExtractionStatus.Failed,
-                DiscoveredCount = QuerySucceeded ? 1 : 0
+                Status = QuerySucceeded ? ExtractionStatus.Completed : ExtractionStatus.Failed
             };
+            result.Pagination.Status = QuerySucceeded ? PaginationStatus.Completed : PaginationStatus.NotStarted;
+            result.Pagination.PagesProcessed = QuerySucceeded ? 1 : 0;
+            result.Pagination.ReportedTotalCount = QuerySucceeded ? 1 : null;
+            if (Incomplete && QuerySucceeded)
+            {
+                result.Status = ExtractionStatus.Partial;
+                result.Pagination.Status = PaginationStatus.Incomplete;
+                result.Errors.Add(new(ExtractionErrorCode.PaginationNavigationFailed, "Navigation failed.", PageNumber: 2));
+            }
             if (QuerySucceeded)
                 result.Documents.Add(new()
                 {

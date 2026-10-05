@@ -2,7 +2,7 @@ using DescagaCompronanteSRI.Models.Enums;
 
 namespace DescagaCompronanteSRI.Models.Extraction;
 
-public sealed record ExtractionError(ExtractionErrorCode Code, string Message, int? RowIndex = null);
+public sealed record ExtractionError(ExtractionErrorCode Code, string Message, int? RowIndex = null, int? PageNumber = null);
 
 public sealed record OperationResult<T>(T? Value, ExtractionError? Error)
 {

@@ -11,7 +11,7 @@ namespace DescagaCompronanteSRI.Controllers;
 [Route("api/received-documents")]
 public sealed class ReceivedDocumentsController(IReceivedDocumentsService service) : ControllerBase
 {
-    /// <summary>Downloads documents from the currently visible received-documents page.</summary>
+    /// <summary>Traverses received-document pages and reports saved documents and pagination completeness.</summary>
     [HttpPost("query")]
     [ProducesResponseType(typeof(ReceivedDocumentsResponse), StatusCodes.Status200OK)]
     [ProducesResponseType(typeof(ReceivedDocumentsResponse), StatusCodes.Status500InternalServerError)]

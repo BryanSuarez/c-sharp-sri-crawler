@@ -1,3 +1,4 @@
+using Microsoft.Extensions.Options;
 using DescagaCompronanteSRI.Contracts;
 using DescagaCompronanteSRI.Models.Dtos;
 using DescagaCompronanteSRI.Models.Enums;
@@ -10,7 +11,7 @@ namespace DescagaCompronanteSRI.Services.ReceivedDocuments;
 public sealed class ReceivedDocumentsService(
     IReceivedDocumentsSessionFactory sessionFactory, IReceivedDocumentsPage page,
     IDocumentDownloader downloader, IDocumentParser parser, IDocumentStorage storage,
-    ILogger<ReceivedDocumentsService> logger) : IReceivedDocumentsService
+    ILogger<ReceivedDocumentsService> logger, IOptions<ReceivedDocumentsPaginationOptions> options) : IReceivedDocumentsService
 {
     public async Task<ReceivedDocumentsResponse> QueryAsync(ReceivedDocumentsQuery query)
     {
@@ -34,44 +35,141 @@ public sealed class ReceivedDocumentsService(
                 return Fail(result, queryResult.Error!.Code, queryResult.Error.Message);
 
             result.QuerySucceeded = true;
-            result.DiscoveredCount = queryResult.Value;
-            stage = ExtractionErrorCode.UnexpectedError;
-            if (result.DiscoveredCount == 0)
-            {
-                result.Status = ExtractionStatus.NoDocuments;
-                return result;
-            }
-
-            for (var index = 0; index < result.DiscoveredCount; index++)
-            {
-                var document = await ProcessDocumentAsync(session, query, index);
-                result.Documents.Add(document);
-                logger.LogInformation("Received document {Row}/{Count}: {Status}, parse {ParseStatus}.",
-                    index + 1, result.DiscoveredCount, document.DownloadStatus, document.ParseStatus);
-            }
-            result.Status = result.DownloadedCount == 0 ? ExtractionStatus.Failed
-                : result.FailedCount > 0 ? ExtractionStatus.Partial : ExtractionStatus.Completed;
+            result.Pagination.Status = PaginationStatus.Incomplete;
+            stage = ExtractionErrorCode.PaginationNavigationFailed;
+            await TraverseAsync(session, query, queryResult.Value!, result);
+            SetStatus(result);
         }
         catch (Exception exception)
         {
             logger.LogError(exception, "Received extraction failed during {Stage}.", stage);
-            result.QuerySucceeded = false;
-            return Fail(result, stage, "Received document extraction could not be executed.");
+            if (!result.QuerySucceeded)
+                return Fail(result, stage, "Received document extraction could not be executed.");
+            result.Pagination.Status = PaginationStatus.Incomplete;
+            result.Errors.Add(new(stage, "The document traversal was interrupted.",
+                PageNumber: result.Pagination.PagesProcessed + 1));
+            SetStatus(result);
         }
         return result;
     }
 
-    private async Task<ReceivedDocumentResponse> ProcessDocumentAsync(
-        IReceivedDocumentsSession session, ReceivedDocumentsQuery query, int rowIndex)
+    private async Task TraverseAsync(IReceivedDocumentsSession session, ReceivedDocumentsQuery query,
+        ReceivedDocumentsPageSnapshot snapshot, ReceivedDocumentsResponse result)
     {
-        var result = new ReceivedDocumentResponse { RowIndex = rowIndex, DownloadFormat = query.DownloadFormat };
+        var keys = new HashSet<string>(StringComparer.Ordinal);
+        var fingerprints = new HashSet<string>(StringComparer.Ordinal);
+        var expectedPage = 1;
+        var rowsVisited = 0;
+        var consistent = true;
+        void Error(ExtractionErrorCode code, string message, int? row = null)
+        {
+            consistent = false;
+            result.Errors.Add(new(code, message, row, expectedPage));
+            logger.LogWarning("Received pagination page {Page}: {Reason}", expectedPage, message);
+        }
+
+        while (true)
+        {
+            if (snapshot.PageNumber is not null && snapshot.PageNumber != expectedPage)
+            {
+                Error(ExtractionErrorCode.PaginationInconsistent, "The portal skipped or moved backwards from the expected page.");
+                return;
+            }
+            if (snapshot.Rows.Count > 0 && !fingerprints.Add(snapshot.Fingerprint))
+            {
+                Error(ExtractionErrorCode.RepeatedPage, "The portal returned a previously processed page.");
+                return;
+            }
+            if (snapshot.ReportedTotalCount is int total)
+            {
+                if (result.Pagination.ReportedTotalCount is int previous && previous != total)
+                    Error(ExtractionErrorCode.PaginationInconsistent, "The portal total changed during extraction.");
+                result.Pagination.ReportedTotalCount ??= total;
+            }
+            if (snapshot.StateError is not null)
+                Error(snapshot.StateError.Code, snapshot.StateError.Message);
+
+            if (snapshot.Rows.Count == 0)
+            {
+                if (expectedPage == 1 && snapshot.IsEmptyConfirmed && snapshot.HasNextPage == false &&
+                    (result.Pagination.ReportedTotalCount is null or 0) && consistent)
+                    result.Pagination.Status = PaginationStatus.Completed;
+                else Error(ExtractionErrorCode.PaginationInconsistent, "An unexpected empty page prevented verification of the results.");
+                return;
+            }
+
+            result.Pagination.PagesProcessed++;
+            rowsVisited += snapshot.Rows.Count;
+            foreach (var row in snapshot.Rows)
+            {
+                var key = row.Result.Value?.Metadata.AuthorizationNumber;
+                if (key is { Length: 49 } && key.All(char.IsAsciiDigit) && !keys.Add(key))
+                {
+                    result.Pagination.DuplicateCount++;
+                    Error(ExtractionErrorCode.DuplicateDocument, "A document appeared more than once in this extraction.", row.RowIndex);
+                    continue;
+                }
+                var document = await ProcessDocumentAsync(session, query, row, expectedPage);
+                result.Documents.Add(document);
+                logger.LogInformation("Received page {Page}, row {Row}: {Status}, parse {ParseStatus}; {Count} results accumulated.",
+                    expectedPage, row.RowIndex, document.DownloadStatus, document.ParseStatus, result.DiscoveredCount);
+            }
+            logger.LogInformation("Received page {Page} processed: {Discovered} discovered, {Downloaded} saved, {Failed} failed.",
+                expectedPage, result.DiscoveredCount, result.DownloadedCount, result.FailedCount);
+
+            if (snapshot.PageNumber is null)
+            {
+                Error(ExtractionErrorCode.PaginationStateUnknown, "The current page position could not be verified.");
+                return;
+            }
+            if (snapshot.HasNextPage == false)
+            {
+                if (result.Pagination.ReportedTotalCount is int announced && announced != rowsVisited)
+                    Error(ExtractionErrorCode.PaginationInconsistent, "The traversed row count does not match the portal total.");
+                if (consistent) result.Pagination.Status = PaginationStatus.Completed;
+                return;
+            }
+            if (snapshot.HasNextPage is null || snapshot.StateError is not null)
+            {
+                Error(ExtractionErrorCode.PaginationStateUnknown, "The portal did not provide enough evidence to continue or confirm the end.");
+                return;
+            }
+            if (result.Pagination.PagesProcessed >= options.Value.MaxPages)
+            {
+                Error(ExtractionErrorCode.PaginationLimitReached, "The configured page limit was reached with more pages pending.");
+                return;
+            }
+            expectedPage++;
+            var next = await page.MoveNextAsync(session, snapshot);
+            if (!next.IsSuccess)
+            {
+                Error(next.Error!.Code, next.Error.Message);
+                return;
+            }
+            snapshot = next.Value!;
+        }
+    }
+
+    private static void SetStatus(ReceivedDocumentsResponse result)
+    {
+        var complete = result.Pagination.Status == PaginationStatus.Completed;
+        result.Status = result.DownloadedCount > 0
+            ? complete && result.FailedCount == 0 ? ExtractionStatus.Completed : ExtractionStatus.Partial
+            : complete && result.DiscoveredCount == 0 ? ExtractionStatus.NoDocuments : ExtractionStatus.Failed;
+    }
+
+    private async Task<ReceivedDocumentResponse> ProcessDocumentAsync(
+        IReceivedDocumentsSession session, ReceivedDocumentsQuery query, ReceivedDocumentRowSnapshot snapshot, int pageNumber)
+    {
+        var rowIndex = snapshot.RowIndex;
+        var result = new ReceivedDocumentResponse { PageNumber = pageNumber, RowIndex = rowIndex, DownloadFormat = query.DownloadFormat };
         var stage = ExtractionErrorCode.RowReadFailed;
         try
         {
-            var row = await page.ReadRowAsync(session, rowIndex);
+            var row = snapshot.Result;
             if (!row.IsSuccess)
             {
-                result.Errors.Add(row.Error! with { RowIndex = rowIndex });
+                result.Errors.Add(row.Error! with { RowIndex = rowIndex, PageNumber = pageNumber });
                 return result;
             }
             result.Metadata = row.Value!.Metadata;
@@ -79,7 +177,7 @@ public sealed class ReceivedDocumentsService(
             var download = await downloader.DownloadAsync(session, row.Value, query.DownloadFormat);
             if (!download.IsSuccess)
             {
-                result.Errors.Add(download.Error! with { RowIndex = rowIndex });
+                result.Errors.Add(download.Error! with { RowIndex = rowIndex, PageNumber = pageNumber });
                 return result;
             }
 
@@ -97,7 +195,7 @@ public sealed class ReceivedDocumentsService(
             }
             result.ParseStatus = parsed.Status;
             result.ParsedDocument = parsed.Document;
-            if (parsed.Error is not null) result.Errors.Add(parsed.Error with { RowIndex = rowIndex });
+            if (parsed.Error is not null) result.Errors.Add(parsed.Error with { RowIndex = rowIndex, PageNumber = pageNumber });
 
             stage = ExtractionErrorCode.StorageFailed;
             result.Storage = await storage.SaveAsync(new DocumentStorageContext(
@@ -109,7 +207,7 @@ public sealed class ReceivedDocumentsService(
         catch (Exception exception)
         {
             logger.LogWarning(exception, "Document processing failed at row {RowIndex} during {Stage}.", rowIndex, stage);
-            result.Errors.Add(new(stage, "Document processing failed.", rowIndex));
+            result.Errors.Add(new(stage, "Document processing failed.", rowIndex, pageNumber));
         }
         return result;
     }
