@@ -3,6 +3,8 @@ using DescagaCompronanteSRI.Contracts;
 using DescagaCompronanteSRI.Models.Dtos;
 using DescagaCompronanteSRI.Models.Enums;
 using DescagaCompronanteSRI.Models.Extraction;
+using DescagaCompronanteSRI.Models.Storage;
+using DescagaCompronanteSRI.Services.Storage;
 using DescagaCompronanteSRI.Services.ReceivedDocuments;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Playwright;
@@ -27,6 +29,9 @@ public class ReceivedDocumentsServiceTests
         Assert.Equal(parseStatus, document.ParseStatus);
         Assert.Equal("1790012345001", response.TaxpayerId);
         Assert.Equal("Test Company", response.BusinessName);
+        Assert.Equal("acme", response.CompanyId);
+        Assert.StartsWith("acme/1790012345001/2026/06/received/invoice/", document.Storage!.Key);
+        Assert.Equal("/test/file", document.FilePath);
         Assert.True(scenario.Session.Disposed);
         Assert.All(scenario.Contents, content => Assert.False(content.Stream.CanRead));
         Assert.Equal(1, scenario.SaveCount);
@@ -137,9 +142,54 @@ public class ReceivedDocumentsServiceTests
         Assert.Equal(ExtractionErrorCode.PortalAccessFailed, response.Errors[0].Code);
     }
 
+    [Theory]
+    [InlineData(StorageProvider.S3)]
+    [InlineData(StorageProvider.R2)]
+    public async Task Query_RemoteStorageReturnsReferenceWithoutLocalPath(StorageProvider provider)
+    {
+        var scenario = new Scenario { Provider = provider };
+        var response = await scenario.Service.QueryAsync(Query());
+        var document = Assert.Single(response.Documents);
+        Assert.Equal(provider, document.Storage!.Provider);
+        Assert.Equal("test-bucket", document.Storage.Bucket);
+        Assert.Null(document.FilePath);
+        Assert.Equal(DocumentDownloadStatus.Downloaded, document.DownloadStatus);
+    }
+
+    [Fact]
+    public async Task Query_StorageFailureContinuesWithRemainingDocuments()
+    {
+        var scenario = new Scenario { RowCount = 3, FailedSaveRow = 1 };
+        var response = await scenario.Service.QueryAsync(Query());
+        Assert.Equal(ExtractionStatus.Partial, response.Status);
+        Assert.Equal(2, response.DownloadedCount);
+        Assert.Null(response.Documents[1].Storage);
+        Assert.Equal(ExtractionErrorCode.StorageFailed, response.Documents[1].Errors.Single().Code);
+        Assert.Equal(DocumentDownloadStatus.Downloaded, response.Documents[2].DownloadStatus);
+    }
+
+    [Fact]
+    public async Task Query_InvalidAccessKeyIsReportedAsStorageFailure()
+    {
+        var response = await new Scenario { InvalidAccessKey = true }.Service.QueryAsync(Query());
+        Assert.Equal(0, response.DownloadedCount);
+        Assert.Null(response.Documents[0].Storage);
+        Assert.Equal(ExtractionErrorCode.StorageFailed, response.Documents[0].Errors.Single().Code);
+    }
+
+    [Fact]
+    public async Task Query_StoresUnderRequestedYearAndMonth()
+    {
+        var scenario = new Scenario();
+        var response = await scenario.Service.QueryAsync(Query() with { Year = 2025, Month = 1 });
+        Assert.Equal(2025, scenario.LastStorageContext!.Year);
+        Assert.Equal(1, scenario.LastStorageContext.Month);
+        Assert.StartsWith("acme/1790012345001/2025/01/received/invoice/", response.Documents[0].Storage!.Key);
+    }
+
     internal static ReceivedDocumentsQuery Query(DownloadFormat format = DownloadFormat.Xml) => new()
     {
-        User = "1790012345001", Password = "test-only", Year = 2026, Month = 6, Day = 0,
+        CompanyId = "acme", User = "1790012345001", Password = "test-only", Year = 2026, Month = 6, Day = 0,
         DocumentType = DocumentType.Invoice, DownloadFormat = format
     };
 
@@ -151,10 +201,14 @@ public class ReceivedDocumentsServiceTests
         public int? FailedDownloadRow { get; init; }
         public string? FailureStage { get; init; }
         public bool ThrowOnSave { get; init; }
+        public int? FailedSaveRow { get; init; }
+        public bool InvalidAccessKey { get; init; }
+        public StorageProvider Provider { get; init; } = StorageProvider.Local;
         public bool ThrowOnParse { get; init; }
         public bool ThrowOnOpen { get; init; }
         public int DownloadCount { get; private set; }
         public int SaveCount { get; private set; }
+        public DocumentStorageContext? LastStorageContext { get; private set; }
         public List<DocumentContent> Contents { get; } = [];
         public FakeSession Session { get; private set; } = null!;
         public ReceivedDocumentsService Service => new(this, this, this, this, this,
@@ -171,7 +225,7 @@ public class ReceivedDocumentsServiceTests
             Task.FromResult(FailedReadRow == rowIndex
                 ? OperationResult<ReceivedDocumentReference>.Failure(ExtractionErrorCode.RowReadFailed, "Row failed.")
                 : OperationResult<ReceivedDocumentReference>.Success(new(
-                    new ReceivedDocumentMetadata { AuthorizationNumber = rowIndex.ToString().PadLeft(49, '0') },
+                    new ReceivedDocumentMetadata { AuthorizationNumber = InvalidAccessKey ? "invalid" : rowIndex.ToString().PadLeft(49, '0') },
                     "xml", "pdf", "detail")));
 
         public Task<OperationResult<DocumentContent>> DownloadAsync(
@@ -192,15 +246,20 @@ public class ReceivedDocumentsServiceTests
         public Task<DocumentParseResult> ParseAsync(DocumentContent content, DocumentType documentType) =>
             ThrowOnParse ? throw new InvalidOperationException("Parse failure") : new DocumentParser().ParseAsync(content, documentType);
 
-        public Task<string> SaveAsync(string taxpayerId, string authorizationNumber, DocumentContent content)
+        public Task<DocumentStorageReference> SaveAsync(DocumentStorageContext context, DocumentContent content, CancellationToken cancellationToken = default)
         {
+            LastStorageContext = context;
             SaveCount++;
-            if (ThrowOnSave) throw new IOException("Disk failure");
+            if (ThrowOnSave || FailedSaveRow == SaveCount - 1) throw new IOException("Disk failure");
             Assert.True(content.Stream.CanRead);
             Assert.Equal(0, content.Stream.Position);
-            return Task.FromResult("/test/" + authorizationNumber);
+            Assert.Equal("acme", context.CompanyId);
+            Assert.Equal("1790012345001", context.TaxpayerId);
+            Assert.Equal(DocumentDirection.Received, context.Direction);
+            return Task.FromResult(new DocumentStorageReference(Provider, Provider == StorageProvider.Local ? null : "test-bucket",
+                DocumentStorageKey.Create(context, content.Format)) { LocalPath = Provider == StorageProvider.Local ? "/test/file" : null });
         }
-        public Task<Stream> OpenReadAsync(string taxpayerId, string authorizationNumber, DownloadFormat format) =>
+        public Task<Stream> OpenReadAsync(DocumentStorageReference reference, CancellationToken cancellationToken = default) =>
             throw new NotSupportedException();
     }
 

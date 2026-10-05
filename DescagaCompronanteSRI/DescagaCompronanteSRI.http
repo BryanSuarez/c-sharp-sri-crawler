@@ -1,4 +1,5 @@
 @HostAddress = http://localhost:5276
+@CompanyId = acme
 @SriUser = TU_RUC
 @SriPassword = TU_PASSWORD_SRI
 @SriAccessKey = CLAVE_ACCESO_49_DIGITOS
@@ -8,6 +9,7 @@ POST {{HostAddress}}/api/received-documents/query
 Content-Type: application/json
 
 {
+  "companyId": "{{CompanyId}}",
   "user": "{{SriUser}}",
   "additionalUser": null,
   "password": "{{SriPassword}}",
@@ -23,6 +25,7 @@ POST {{HostAddress}}/api/received-documents/query
 Content-Type: application/json
 
 {
+  "companyId": "{{CompanyId}}",
   "user": "{{SriUser}}",
   "additionalUser": null,
   "password": "{{SriPassword}}",

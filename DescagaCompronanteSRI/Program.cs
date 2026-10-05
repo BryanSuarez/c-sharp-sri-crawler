@@ -5,6 +5,7 @@ using DescagaCompronanteSRI.Services;
 using DescagaCompronanteSRI.Services.ReceivedDocuments;
 using DescagaCompronanteSRI.Models.Enums;
 using Microsoft.OpenApi.Any;
+using DescagaCompronanteSRI.Services.Storage;
 
 var builder = WebApplication.CreateBuilder(new WebApplicationOptions
 {
@@ -12,6 +13,8 @@ var builder = WebApplication.CreateBuilder(new WebApplicationOptions
     ContentRootPath = Directory.GetCurrentDirectory(),
     WebRootPath = "wwwroot"
 });
+
+StorageConfiguration.AddStorageEnvironmentFile(builder.Configuration, builder.Environment);
 
 builder.WebHost.ConfigureKestrel(options =>
 {
@@ -45,7 +48,7 @@ builder.Services.AddScoped<IDocumentParser, DocumentParser>();
 builder.Services.AddScoped<IDocumentDownloadStrategy, XmlDocumentDownloadStrategy>();
 builder.Services.AddScoped<IDocumentDownloadStrategy, PdfDocumentDownloadStrategy>();
 builder.Services.AddScoped<IDocumentDownloader, DocumentDownloader>();
-builder.Services.AddScoped<IDocumentStorage, LocalDocumentStorage>();
+builder.Services.AddDocumentStorage();
 builder.Services.AddScoped<IReceivedDocumentsService, ReceivedDocumentsService>();
 
 builder.Services.AddScoped<IIssuedDocumentsService, ConsultaComprobantesEmitidosService>();
@@ -54,6 +57,7 @@ builder.Services.AddScoped<IIssuedDocumentsService, ConsultaComprobantesEmitidos
 
 builder.Services.AddSwaggerGen(c =>
 {
+    c.MapType<StorageProvider>(() => EnumSchema<StorageProvider>());
     c.MapType<DocumentType>(() => EnumSchema<DocumentType>());
     c.MapType<DownloadFormat>(() => EnumSchema<DownloadFormat>());
     c.MapType<ExtractionStatus>(() => EnumSchema<ExtractionStatus>());
