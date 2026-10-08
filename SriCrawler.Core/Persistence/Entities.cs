@@ -9,6 +9,7 @@ public sealed class ExtractionRecord
     public string CompanyId { get; set; } = "";
     public string TaxpayerId { get; set; } = "";
     public Guid? ClientRequestId { get; set; }
+    public DownloadPolicy DownloadPolicy { get; set; } = DownloadPolicy.Refresh;
     public string Fingerprint { get; set; } = "";
     public string QueryJson { get; set; } = "{}";
     public string? EncryptedPassword { get; set; }
@@ -54,6 +55,9 @@ public sealed class DocumentFile
     public int Month { get; set; }
     public string StorageJson { get; set; } = "{}";
     public string? LocalPath { get; set; }
+    public string? StorageRevision { get; set; }
+    public DateTimeOffset? StoredAt { get; set; }
+    public string? ValidationProfile { get; set; }
     public string ValidationJson { get; set; } = "{}";
     public string? Sha256 { get; set; }
     public long? SizeBytes { get; set; }
@@ -81,6 +85,7 @@ public sealed class ExtractionDocument
     public long? DocumentId { get; set; }
     public long? FileId { get; set; }
     public long? ConversionId { get; set; }
+    public DocumentAcquisitionSource AcquisitionSource { get; set; }
     public DocumentDownloadStatus DownloadStatus { get; set; }
     public DocumentParseStatus JsonStatus { get; set; }
     public DocumentValidationStatus ValidationStatus { get; set; }

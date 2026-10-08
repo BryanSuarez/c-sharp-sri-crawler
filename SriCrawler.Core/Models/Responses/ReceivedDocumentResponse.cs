@@ -10,6 +10,8 @@ public sealed class ReceivedDocumentResponse
     public ReceivedDocumentMetadata? Metadata { get; set; }
     public DownloadFormat DownloadFormat { get; init; }
     public DocumentDownloadStatus DownloadStatus { get; set; } = DocumentDownloadStatus.Failed;
+    public DocumentAcquisitionSource AcquisitionSource { get; set; }
+    [System.Text.Json.Serialization.JsonIgnore] public long? ReusedFileId { get; set; }
     public DocumentValidationResult Validation { get; set; } = new();
     public DocumentStorageStatus StorageStatus { get; set; } = DocumentStorageStatus.NotAttempted;
     public MetadataParseStatus MetadataParseStatus => Metadata?.MetadataParseStatus ?? MetadataParseStatus.NotChecked;

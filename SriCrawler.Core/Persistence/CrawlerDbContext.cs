@@ -16,6 +16,7 @@ public sealed class CrawlerDbContext(DbContextOptions<CrawlerDbContext> options)
     {
         model.HasDefaultSchema("crawler");
         model.Entity<ExtractionRecord>().ToTable("extractions");
+        model.Entity<ExtractionRecord>().Property(x => x.DownloadPolicy).HasDefaultValue(DescagaCompronanteSRI.Models.Enums.DownloadPolicy.Refresh).HasSentinel(DescagaCompronanteSRI.Models.Enums.DownloadPolicy.Refresh);
         model.Entity<ExtractionRecord>().HasIndex(e => new { e.CompanyId, e.ClientRequestId }).IsUnique();
         model.Entity<ExtractionRecord>().HasIndex(e => new { e.CompanyId, e.TaxpayerId, e.CreatedAt });
         model.Entity<ExtractionAttempt>().ToTable("attempts");

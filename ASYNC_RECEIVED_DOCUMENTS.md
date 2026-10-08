@@ -165,3 +165,7 @@ The PostgreSQL results each reference a conversion and preserve the queried taxp
 The automated container entrypoint probe checks graceful signal forwarding, normal restart and recovery after SIGKILL, without contacting SRI. Run it with `bash scripts/test-container-entrypoint.sh sri-crawler-worker` after building the worker image. SRI availability and CAPTCHA acceptance remain external dependencies; bounded rejection is reported explicitly.
 
 No webhooks, frontend, nightly scheduler, authentication, signed URLs, historical migration or issued-contract changes are included. Real R2 validation requires R2 credentials and remains pending. The earlier recovery acceptance above covers XML. The subsequent metadata/file-validation block also completed real 306-document XML and PDF extractions in isolated local storage; see [the validation acceptance record](RECEIVED_DOCUMENT_VALIDATION.md#real-acceptance-october-7-2026).
+
+## Cross-extraction reuse
+
+New jobs default to `downloadPolicy: reuseValid`; `refresh` bypasses other jobs while retaining same-job recovery. The policy does not change idempotent request identity. Summary includes `newlyDownloadedCount` and `reusedCount`; each result exposes `acquisitionSource`. Existing downloaded counts include confirmed reused files. Apply the additive migration before restarting API/worker. See [reuse, integrity checks, atomic storage and real acceptance](DOCUMENT_REUSE.md).

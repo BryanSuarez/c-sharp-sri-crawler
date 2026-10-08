@@ -28,6 +28,12 @@ public sealed class ExtractionJobs(CrawlerDbContext db, CredentialCipher cipher,
             using var historical = JsonDocument.Parse(value);
             if (!historical.RootElement.TryGetProperty("storageStatus", out _)) response.StorageStatus = DocumentStorageStatus.Stored;
         }
+        if (result is ReceivedDocumentResponse legacy)
+        {
+            using var snapshot = JsonDocument.Parse(value);
+            if (!snapshot.RootElement.TryGetProperty("acquisitionSource", out _) && legacy.DownloadStatus == DocumentDownloadStatus.Downloaded)
+                legacy.AcquisitionSource = DocumentAcquisitionSource.Downloaded;
+        }
         return result;
     }
 
@@ -49,7 +55,7 @@ public sealed class ExtractionJobs(CrawlerDbContext db, CredentialCipher cipher,
             var extraction = new ExtractionRecord
             {
                 Id = id, CompanyId = query.CompanyId, TaxpayerId = query.User,
-                ClientRequestId = requestId, Fingerprint = fingerprint, QueryJson = queryJson,
+                DownloadPolicy = query.DownloadPolicy, ClientRequestId = requestId, Fingerprint = fingerprint, QueryJson = queryJson,
                 EncryptedPassword = cipher.Encrypt(query.Password, id), CreatedAt = now,
                 ExpiresAt = now.AddHours(options.Value.CredentialLifetimeHours),
                 JobStatus = JobStatus.Queued, Stage = ExtractionStage.Queued,
@@ -93,6 +99,7 @@ public sealed class ExtractionJobs(CrawlerDbContext db, CredentialCipher cipher,
         // Read all counters in one database snapshot while the worker is adding results.
         var counts = await results.GroupBy(x => x.ExtractionId).Select(g => new
         {
+            Reused = g.Count(x => x.DownloadStatus == DocumentDownloadStatus.Downloaded && x.AcquisitionSource == DocumentAcquisitionSource.Reused),
             Total = g.Count(), Saved = g.Count(x => x.DownloadStatus == DocumentDownloadStatus.Downloaded),
             ConversionFailed = g.Count(x => x.JsonStatus == DocumentParseStatus.Failed),
             Unsupported = g.Count(x => x.JsonStatus == DocumentParseStatus.Unsupported),
@@ -103,7 +110,7 @@ public sealed class ExtractionJobs(CrawlerDbContext db, CredentialCipher cipher,
         var saved = counts?.Saved ?? 0;
         return new(e.Id, e.CompanyId, e.TaxpayerId, e.JobStatus, e.ExtractionStatus, e.Stage, e.AttemptCount,
             e.CreatedAt, e.StartedAt, e.FinishedAt, e.LastActivityAt, count, saved, count - saved,
-            counts?.ConversionFailed ?? 0, counts?.Unsupported ?? 0, Deserialize<PaginationProgress>(e.PaginationJson), counts?.ValidationIssues ?? 0, counts?.MetadataIssues ?? 0);
+            counts?.ConversionFailed ?? 0, counts?.Unsupported ?? 0, Deserialize<PaginationProgress>(e.PaginationJson), counts?.ValidationIssues ?? 0, counts?.MetadataIssues ?? 0, saved - (counts?.Reused ?? 0), counts?.Reused ?? 0);
     }
     public async Task<CursorPage<JsonElement>?> DocumentsAsync(Guid id, string companyId, long cursor, int limit, CancellationToken token)
     {
@@ -116,7 +123,7 @@ public sealed class ExtractionJobs(CrawlerDbContext db, CredentialCipher cipher,
             return JsonSerializer.SerializeToElement(new
             {
                 documentId = x.Id, e.CompanyId, e.TaxpayerId, response.PageNumber, response.RowIndex,
-                response.Metadata, response.DownloadFormat, response.DownloadStatus, response.ParseStatus,
+                response.Metadata, response.DownloadFormat, response.DownloadStatus, response.AcquisitionSource, response.ParseStatus,
                 jsonParseStatus = x.JsonStatus, response.Validation, response.StorageStatus, response.MetadataParseStatus, response.Storage, response.FilePath, response.Errors
             }, Json);
         }).ToList();

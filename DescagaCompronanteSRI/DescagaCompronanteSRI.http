@@ -8,6 +8,7 @@
 
 ### Query received documents across all verifiable pages (XML)
 # Inspect pagination.status, pagesProcessed, reportedTotalCount and duplicateCount.
+# Inspect newlyDownloadedCount/reusedCount and per-document acquisitionSource.
 # Default async response is HTTP 202. Poll the status URL until terminal.
 POST {{HostAddress}}/api/received-documents/query
 Content-Type: application/json
@@ -21,7 +22,8 @@ Content-Type: application/json
   "month": 6,
   "day": 0,
   "documentType": "invoice",
-  "downloadFormat": "xml"
+  "downloadFormat": "xml",
+  "downloadPolicy": "reuseValid"
 }
 
 ### Query received documents across all verifiable pages (PDF)
@@ -39,6 +41,22 @@ Content-Type: application/json
   "day": 0,
   "documentType": "invoice",
   "downloadFormat": "pdf"
+}
+
+### Force a fresh SRI download (use a new clientRequestId or omit it)
+POST {{HostAddress}}/api/received-documents/query
+Content-Type: application/json
+
+{
+  "companyId": "{{CompanyId}}",
+  "user": "{{SriUser}}",
+  "password": "{{SriPassword}}",
+  "year": 2026,
+  "month": 6,
+  "day": 0,
+  "documentType": "invoice",
+  "downloadFormat": "xml",
+  "downloadPolicy": "refresh"
 }
 
 ### Status and summary

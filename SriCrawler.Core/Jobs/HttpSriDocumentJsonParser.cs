@@ -8,6 +8,8 @@ namespace DescagaCompronanteSRI.Jobs;
 
 public sealed class HttpSriDocumentJsonParser(HttpClient client, IOptions<ExtractionJobOptions> options) : ISriDocumentJsonParser
 {
+    public const string ParserName = "taxo-sri-xml-2-json";
+    public const string ParserVersion = "1.8.0";
     public async Task<JsonConversion> ParseAsync(string xml, DocumentType type, string accessKey, CancellationToken token)
     {
         if (type is DocumentType.RemissionGuide or DocumentType.RemissionGuideAlternative)
@@ -36,7 +38,7 @@ public sealed class HttpSriDocumentJsonParser(HttpClient client, IOptions<Extrac
                 var json = parsed?.DocumentJson;
                 var expectedType = type switch { DocumentType.Invoice => "factura", DocumentType.PurchaseSettlement => "liquidacionCompra",
                     DocumentType.CreditNote => "notaCredito", DocumentType.DebitNote => "notaDebito", DocumentType.Withholding => "comprobanteRetencion", _ => "" };
-                if (parsed?.Status != "parsed" || parsed.ParserName != "taxo-sri-xml-2-json" || parsed.ParserVersion != "1.8.0")
+                if (parsed?.Status != "parsed" || parsed.ParserName != ParserName || parsed.ParserVersion != ParserVersion)
                     return new(DocumentParseStatus.Failed, ErrorCode: "invalidParserResponse");
                 if (parsed.DocumentType != expectedType || json is null ||
                     !json.Value.TryGetProperty("infoTributaria", out var tax) ||

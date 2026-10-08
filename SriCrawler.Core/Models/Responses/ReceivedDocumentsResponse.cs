@@ -16,6 +16,9 @@ public sealed class ReceivedDocumentsResponse
     public int DiscoveredCount => AccumulateDocuments ? Documents.Count : ProcessedCount;
     public PaginationProgress Pagination { get; } = new();
     public int DownloadedCount => AccumulateDocuments ? Documents.Count(d => d.DownloadStatus == DocumentDownloadStatus.Downloaded) : SavedCount;
+    [JsonIgnore] public int ReusedFiles { get; set; }
+    public int ReusedCount => AccumulateDocuments ? Documents.Count(d => d.DownloadStatus == DocumentDownloadStatus.Downloaded && d.AcquisitionSource == DocumentAcquisitionSource.Reused) : ReusedFiles;
+    public int NewlyDownloadedCount => DownloadedCount - ReusedCount;
     [JsonIgnore] public int ValidationIssues { get; set; }
     [JsonIgnore] public int MetadataIssues { get; set; }
     public int ValidationIssueCount => AccumulateDocuments ? Documents.Count(d => d.Validation.Status is DocumentValidationStatus.Invalid or DocumentValidationStatus.Unsupported or DocumentValidationStatus.Failed) : ValidationIssues;

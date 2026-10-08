@@ -18,7 +18,7 @@ public enum ExtractionErrorCode
     DownloadFailed, ParsingFailed, UnsupportedDocumentType, StorageFailed, UnexpectedError,
     PaginationNavigationFailed, RepeatedPage, DuplicateDocument, PaginationStateUnknown,
     PaginationInconsistent, PaginationLimitReached,
-    InvalidMetadata, InvalidDocument, UnsupportedDocumentVersion, ValidationFailed, DocumentIdentityMismatch, InputTooLarge
+    InvalidMetadata, InvalidDocument, UnsupportedDocumentVersion, ValidationFailed, DocumentIdentityMismatch, InputTooLarge, StorageVerificationFailed
 }
 
 [JsonConverter(typeof(ApiEnumConverter<PaginationStatus>))]
@@ -32,3 +32,8 @@ public enum DocumentStorageStatus { NotAttempted, Stored, Failed }
 public enum DocumentIdentityStatus { NotVerified, Verified, Mismatch }
 [JsonConverter(typeof(ApiEnumConverter<MetadataParseStatus>))]
 public enum MetadataParseStatus { NotChecked, Parsed, Partial, Failed }
+
+[JsonConverter(typeof(ApiEnumConverter<DownloadPolicy>))]
+public enum DownloadPolicy { ReuseValid, Refresh }
+[JsonConverter(typeof(ApiEnumConverter<DocumentAcquisitionSource>))]
+public enum DocumentAcquisitionSource { NotAcquired, Downloaded, Reused }

@@ -51,6 +51,8 @@ builder.Services.AddScoped<IIssuedDocumentsService, ConsultaComprobantesEmitidos
 
 builder.Services.AddSwaggerGen(c =>
 {
+    c.MapType<DownloadPolicy>(() => EnumSchema<DownloadPolicy>());
+    c.MapType<DocumentAcquisitionSource>(() => EnumSchema<DocumentAcquisitionSource>());
     c.MapType<ExecutionMode>(() => EnumSchema<ExecutionMode>());
     c.MapType<JobStatus>(() => EnumSchema<JobStatus>());
     c.MapType<ExtractionStage>(() => EnumSchema<ExtractionStage>());

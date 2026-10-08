@@ -15,7 +15,7 @@ namespace DescagaCompronanteSRI.Jobs;
 
 public sealed class ExtractionWorker(IDbContextFactory<CrawlerDbContext> factory, IReceivedExtractionRunner runner,
     CredentialCipher cipher, ISriDocumentJsonParser parser, IDocumentStorage storage,
-    IBackgroundJobClient jobs, IOptions<ExtractionJobOptions> options, ILogger<ExtractionWorker> logger, IDocumentValidator validator, IOptions<DescagaCompronanteSRI.Validation.DocumentValidationOptions> validationOptions)
+    IBackgroundJobClient jobs, IOptions<ExtractionJobOptions> options, ILogger<ExtractionWorker> logger, IDocumentValidator validator, IOptions<DescagaCompronanteSRI.Validation.DocumentValidationOptions> validationOptions, IDocumentReuseResolver? reuseResolver = null)
 {
     [AutomaticRetry(Attempts = 0)]
     public async Task ExecuteAsync(Guid extractionId, CancellationToken cancellationToken)
@@ -47,7 +47,7 @@ public sealed class ExtractionWorker(IDbContextFactory<CrawlerDbContext> factory
             await FailAsync(record, "executionExpired", cancellationToken);
             return;
         }
-        var query = ExtractionJobs.Deserialize<ReceivedDocumentsQuery>(record.QueryJson) with { Password = cipher.Decrypt(record.EncryptedPassword, record.Id) };
+        var query = ExtractionJobs.Deserialize<ReceivedDocumentsQuery>(record.QueryJson) with { Password = cipher.Decrypt(record.EncryptedPassword, record.Id), DownloadPolicy = record.DownloadPolicy };
         var attemptId = Guid.NewGuid();
         record.AttemptCount++;
         record.ActiveAttemptId = attemptId;
@@ -62,7 +62,7 @@ public sealed class ExtractionWorker(IDbContextFactory<CrawlerDbContext> factory
         var deadline = DateTimeOffset.UtcNow.AddHours(options.Value.AttemptTimeoutHours);
         execution.CancelAfter(TimeSpan.FromHours(options.Value.AttemptTimeoutHours));
         var heartbeat = HeartbeatAsync(connection, extractionId, attemptId, execution);
-        var progress = new PersistentExtractionProgress(factory, parser, storage, extractionId, attemptId, query, validator, validationOptions);
+        var progress = new PersistentExtractionProgress(factory, parser, storage, extractionId, attemptId, query, validator, validationOptions, reuseResolver);
         try
         {
             var response = await runner.RunAsync(query, progress, execution.Token);

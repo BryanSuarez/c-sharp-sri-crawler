@@ -3,6 +3,8 @@ namespace DescagaCompronanteSRI.Models.Dtos;
 
 public sealed record ReceivedDocumentsQuery
 {
+    [System.Text.Json.Serialization.JsonIgnore]
+    public DownloadPolicy DownloadPolicy { get; init; } = DownloadPolicy.ReuseValid;
     public required string CompanyId { get; init; }
     public required string User { get; init; }
     public string? AdditionalUser { get; init; }
