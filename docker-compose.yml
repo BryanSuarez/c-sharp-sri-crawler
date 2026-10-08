@@ -1,38 +1,96 @@
-version: '3.8'
-
 services:
-  sri-descarga:
-    build: .
-    ports:
-      - "8080:8080"
-    
-    # CRÍTICO para OpenVPN — necesita NET_ADMIN para crear interfaz tun0
-    cap_add:
-      - NET_ADMIN
-    devices:
-      - /dev/net/tun:/dev/net/tun
-    
-    volumes:
-      # Carpeta donde se guardan los XMLs/PDFs descargados
-      - ./wwwroot:/app/wwwroot
-      
-      # Archivo de configuración VPN — NO subir a Git
-      # Pon tu archivo .ovpn aquí antes de levantar el contenedor
-      - ./vpn/client.ovpn:/app/vpn/client.ovpn:ro
-      
-      # Cookies de sesión SRI (persistentes entre reinicios)
-      - ./sri_cookies.json:/app/sri_cookies.json
-    
-    env_file:
-      - .env.storage
-
+  postgres:
+    image: postgres:17-alpine
     environment:
-      - ASPNETCORE_ENVIRONMENT=Production
-      - ASPNETCORE_URLS=http://+:8080
-      - DISPLAY=:99
-    
+      POSTGRES_USER: sri
+      POSTGRES_DB: sri
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env.jobs and use --env-file .env.jobs}"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    networks: [backend]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U sri -d sri"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
     restart: unless-stopped
-    
-    # Memoria suficiente para Chrome
+
+  parser:
+    build: ./sri-document-parser
+    networks: [backend]
+    mem_limit: 512m
+    restart: unless-stopped
+
+  migrate:
+    build:
+      context: .
+      target: migrate
+    env_file: [.env.storage, .env.jobs]
+    environment:
+      ExtractionJobs__ConnectionString: "Host=postgres;Database=sri;Username=sri;Password=${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env.jobs and use --env-file .env.jobs}"
+      ASPNETCORE_ENVIRONMENT: Production
+    command: ["--migrate"]
+    networks: [backend]
+    depends_on:
+      postgres: {condition: service_healthy}
+
+  sri-descarga:
+    platform: linux/amd64
+    build:
+      context: .
+      target: api
+    ports: ["8080:8080"]
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8080/health"]
+      interval: 15s
+      timeout: 5s
+      start_period: 30s
+      retries: 3
+    env_file: [.env.storage, .env.jobs]
+    environment:
+      ExtractionJobs__ConnectionString: "Host=postgres;Database=sri;Username=sri;Password=${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env.jobs and use --env-file .env.jobs}"
+      ASPNETCORE_ENVIRONMENT: Production
+      ExtractionJobs__ParserUrl: http://parser:3000
+    volumes:
+      - documents:/app/wwwroot
+    networks: [backend, external]
+    depends_on:
+      migrate: {condition: service_completed_successfully}
+    restart: unless-stopped
+
+  worker:
+    platform: linux/amd64
+    build:
+      context: .
+      target: worker
+    env_file: [.env.storage, .env.jobs]
+    environment:
+      ExtractionJobs__ConnectionString: "Host=postgres;Database=sri;Username=sri;Password=${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env.jobs and use --env-file .env.jobs}"
+      DOTNET_ENVIRONMENT: Production
+      ExtractionJobs__ParserUrl: http://parser:3000
+    volumes:
+      - documents:/app/wwwroot
+      # Add your private VPN mount here when needed: ./vpn/client.ovpn:/app/vpn/client.ovpn:ro
+    cap_add: [NET_ADMIN]
+    devices: ["/dev/net/tun:/dev/net/tun"]
+    networks: [backend, external]
+    depends_on:
+      migrate: {condition: service_completed_successfully}
+      parser: {condition: service_healthy}
     mem_limit: 2g
-    shm_size: '1gb'   # CRÍTICO — Chrome crashea sin suficiente /dev/shm
+    shm_size: 1gb
+    stop_grace_period: 60s
+    healthcheck:
+      test: ["CMD", "dotnet", "/app/SriCrawler.Worker.dll", "--healthcheck"]
+      interval: 30s
+      timeout: 10s
+      start_period: 45s
+      retries: 3
+    restart: unless-stopped
+
+networks:
+  backend: {internal: true}
+  external: {}
+volumes:
+  postgres-data:
+  documents:

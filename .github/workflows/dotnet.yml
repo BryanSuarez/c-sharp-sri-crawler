@@ -9,23 +9,48 @@ on:
 jobs:
   build-test:
     runs-on: ubuntu-latest
-
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: sri
+          POSTGRES_PASSWORD: ci-test-only
+          POSTGRES_DB: sri_test
+        ports: [5432:5432]
+        options: >-
+          --health-cmd "pg_isready -U sri -d sri_test"
+          --health-interval 5s --health-timeout 5s --health-retries 20
+    env:
+      SRI_TEST_POSTGRES: Host=127.0.0.1;Database=sri_test;Username=sri;Password=ci-test-only
+      SRI_TEST_PARSER: http://127.0.0.1:3007/
     steps:
       - name: Checkout
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
       - name: Setup .NET
-        uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4.3.1
+        uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9
         with:
           dotnet-version: |
             7.0.x
             8.0.x
-
+      - name: Build and test parser
+        run: |
+          docker build -t sri-parser:ci sri-document-parser
+          docker run -d --name parser -p 127.0.0.1:3007:3000 sri-parser:ci
+          docker run --rm -v "$PWD/sri-document-parser:/app" -w /app node:22-bookworm-slim sh -c 'corepack enable && corepack prepare pnpm@11.19.0 --activate && pnpm install --frozen-lockfile && pnpm test'
+          for attempt in $(seq 1 30); do curl -fsS http://127.0.0.1:3007/health && break; sleep 1; done
+          curl -fsS http://127.0.0.1:3007/health
       - name: Restore
-        run: dotnet restore DescagaCompronanteSRI.Tests/DescagaCompronanteSRI.Tests.csproj
-
+        run: |
+          dotnet restore DescagaCompronanteSRI.Tests/DescagaCompronanteSRI.Tests.csproj --locked-mode
+          dotnet restore SriCrawler.Worker/SriCrawler.Worker.csproj --locked-mode
       - name: Build
-        run: dotnet build DescagaCompronanteSRI.Tests/DescagaCompronanteSRI.Tests.csproj --configuration Release --no-restore
-
+        run: |
+          dotnet build DescagaCompronanteSRI.Tests --configuration Release --no-restore
+          dotnet build SriCrawler.Worker --configuration Release --no-restore
       - name: Test
-        run: dotnet test DescagaCompronanteSRI.Tests/DescagaCompronanteSRI.Tests.csproj --configuration Release --no-build --verbosity normal
+        run: dotnet test DescagaCompronanteSRI.Tests --configuration Release --no-build --verbosity normal
+      - name: Verify browser in worker container
+        run: |
+          docker build --target worker --platform linux/amd64 -t sri-worker:ci .
+          bash scripts/test-container-entrypoint.sh sri-worker:ci
+          docker run --rm --entrypoint /app/.playwright/node/linux-x64/node sri-worker:ci -e "const {chromium}=require('/app/.playwright/package'); (async()=>{const browser=await chromium.launch({channel:'chrome',headless:true,args:['--no-sandbox','--disable-dev-shm-usage']});try{const page=await browser.newPage();await page.setContent('<title>Container browser check</title>');if(await page.title()!=='Container browser check')throw new Error('Browser check failed');console.log('Container browser check passed');}finally{await browser.close();}})().catch(()=>{console.error('Container browser check failed');process.exitCode=1;});"

@@ -1,22 +1,36 @@
 # ─────────────────────────────────────────────
 # STAGE 1 — Build
 # ─────────────────────────────────────────────
-FROM mcr.microsoft.com/dotnet/sdk:8.0 AS build
+FROM --platform=$BUILDPLATFORM mcr.microsoft.com/dotnet/sdk:8.0 AS build
 WORKDIR /src
 
 COPY DescagaCompronanteSRI/DescagaCompronanteSRI.csproj  DescagaCompronanteSRI/
 COPY TwoCaptcha/TwoCaptcha.csproj                         TwoCaptcha/
+COPY DescagaCompronanteSRI/packages.lock.json DescagaCompronanteSRI/
+COPY SriCrawler.Core/SriCrawler.Core.csproj SriCrawler.Core/
+COPY SriCrawler.Core/packages.lock.json SriCrawler.Core/
+COPY SriCrawler.Worker/SriCrawler.Worker.csproj SriCrawler.Worker/
+COPY SriCrawler.Worker/packages.lock.json SriCrawler.Worker/
 
 RUN dotnet restore DescagaCompronanteSRI/DescagaCompronanteSRI.csproj \
-    --packages /root/.nuget/packages
+    --packages /root/.nuget/packages --locked-mode
+RUN dotnet restore SriCrawler.Worker/SriCrawler.Worker.csproj --locked-mode
 
 COPY DescagaCompronanteSRI/ DescagaCompronanteSRI/
 COPY TwoCaptcha/             TwoCaptcha/
+COPY SriCrawler.Worker/ SriCrawler.Worker/
+COPY SriCrawler.Core/ SriCrawler.Core/
 
 RUN dotnet publish DescagaCompronanteSRI/DescagaCompronanteSRI.csproj \
     -c Release \
     -o /app/publish \
-    --packages /root/.nuget/packages
+    --packages /root/.nuget/packages --no-restore -p:PlaywrightPlatform=linux-x64
+
+RUN dotnet publish SriCrawler.Worker/SriCrawler.Worker.csproj -c Release -o /app/worker --no-restore -p:PlaywrightPlatform=linux-x64
+
+# Native builds on ARM hosts must still include the driver used by the amd64 runtime.
+RUN test -x /app/publish/.playwright/node/linux-x64/node \
+    && test -x /app/worker/.playwright/node/linux-x64/node
 
 # ─────────────────────────────────────────────
 # STAGE 2 — Runtime con Chrome + Xvfb + VPN
@@ -66,6 +80,7 @@ ENV ASPNETCORE_ENVIRONMENT=Production \
     ASPNETCORE_URLS=http://+:8080 \
     DOTNET_RUNNING_IN_CONTAINER=true \
     PLAYWRIGHT_BROWSERS_PATH=/ms-playwright \
+    SRI_BROWSER_HEADLESS=false \
     # Xvfb — Chrome usará este display virtual
     DISPLAY=:99
 
@@ -74,3 +89,17 @@ EXPOSE 8080
 # Corre como root para poder levantar Xvfb y OpenVPN
 # (si prefieres no-root, usa --cap-add NET_ADMIN para OpenVPN)
 ENTRYPOINT ["/app/entrypoint.sh"]
+
+FROM runtime AS worker
+COPY --from=build /app/worker .
+ENV CRAWLER_ASSEMBLY=SriCrawler.Worker.dll
+
+FROM mcr.microsoft.com/dotnet/aspnet:8.0 AS migrate
+WORKDIR /app
+COPY --from=build /app/publish .
+RUN mkdir -p /app/wwwroot
+ENV ASPNETCORE_URLS=http://+:8080
+ENTRYPOINT ["dotnet", "DescagaCompronanteSRI.dll"]
+
+# Issued documents still execute synchronously in the API and require Chrome/Xvfb.
+FROM runtime AS api
