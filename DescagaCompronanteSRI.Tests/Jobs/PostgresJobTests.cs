@@ -1,4 +1,8 @@
 using System.Security.Cryptography;
+using DescagaCompronanteSRI.Validation;
+using DescagaCompronanteSRI.Services.Parsing;
+using DescagaCompronanteSRI.Tests.Validation;
+using System.Text.Json.Nodes;
 using System.Text;
 using System.Text.Json;
 using DescagaCompronanteSRI.Contracts;
@@ -77,13 +81,96 @@ public sealed class PostgresJobTests
     }
     private static PersistentExtractionProgress Progress(ServiceProvider provider, Guid id, Guid attempt, ReceivedDocumentsQuery query) => new(
         provider.GetRequiredService<IDbContextFactory<CrawlerDbContext>>(), provider.GetRequiredService<ISriDocumentJsonParser>(),
-        provider.GetRequiredService<IDocumentStorage>(), id, attempt, query);
+        provider.GetRequiredService<IDocumentStorage>(), id, attempt, query, provider.GetRequiredService<IDocumentValidator>(), provider.GetRequiredService<IOptions<DocumentValidationOptions>>());
     private static ReceivedDocumentResponse Document(string key, DownloadFormat format = DownloadFormat.Xml) => new()
     {
         Metadata = new() { AuthorizationNumber = key }, DownloadFormat = format,
         DownloadStatus = DocumentDownloadStatus.Downloaded, ParseStatus = format == DownloadFormat.Xml ? DocumentParseStatus.Parsed : DocumentParseStatus.NotApplicable,
+        StorageStatus = DocumentStorageStatus.Stored,
+        Validation = new() { Status = DocumentValidationStatus.Valid, ValidatorVersion = "1", Sha256 = "fixture-hash", SizeBytes = 7 },
         Storage = new(StorageProvider.Local, null, "test/key.xml"), SourceXml = "fixture", XmlHash = "fixture-hash"
     };
+
+    [PostgresFact]
+    public async Task MetadataAndValidation_AreTypedPersistentAndCountedWithoutReadingJson()
+    {
+        await using var provider = await Provider(new StubParser());
+        var query = Query(); var run = await Start(provider, query);
+        var result = Document(new string('6', 49));
+        result.StorageStatus = DocumentStorageStatus.NotAttempted;
+        await Assert.ThrowsAsync<InvalidOperationException>(() => Progress(provider, run.Id, run.Attempt, query).SaveAsync(result, default));
+        result.StorageStatus = DocumentStorageStatus.Stored;
+        result.Metadata = new ReceivedDocumentMetadataParser(Microsoft.Extensions.Options.Options.Create(new DocumentValidationOptions()))
+            .Parse(result.Metadata!, new("invalid", "0", "1234.56", "01/09/2026", "01/09/2026 12:30:00"));
+        result.Errors.AddRange(result.Metadata.Errors);
+        await Progress(provider, run.Id, run.Attempt, query).SaveAsync(result, default);
+        var failed = Document(new string('7', 49));
+        failed.DownloadStatus = DocumentDownloadStatus.Failed; failed.Storage = null; failed.StorageStatus = DocumentStorageStatus.NotAttempted;
+        failed.Validation = new() { Status = DocumentValidationStatus.Invalid, Errors = [new(ExtractionErrorCode.InvalidDocument, "Invalid fixture.")] };
+        await Progress(provider, run.Id, run.Attempt, query).SaveAsync(failed, default);
+        await using var db = await provider.GetRequiredService<IDbContextFactory<CrawlerDbContext>>().CreateDbContextAsync();
+        var row = await db.Results.SingleAsync(x => x.ExtractionId == run.Id && x.Identity == new string('6', 49));
+        Assert.Null(row.Amount); Assert.Equal(0m, row.Taxes); Assert.Equal(1234.56m, row.Total);
+        Assert.Equal(new DateOnly(2026, 9, 1), row.IssuedDate);
+        Assert.Equal(new DateTimeOffset(2026, 9, 1, 17, 30, 0, TimeSpan.Zero), row.AuthorizedAt);
+        Assert.Contains("invalid", row.SourceValuesJson!);
+        Assert.Equal(DocumentValidationStatus.Valid, row.ValidationStatus);
+        var file = await db.Files.SingleAsync(x => x.Id == row.FileId);
+        Assert.Equal("fixture-hash", file.Sha256);
+        using var scope = provider.CreateScope();
+        var jobs = scope.ServiceProvider.GetRequiredService<IExtractionJobs>();
+        var summary = await jobs.GetAsync(run.Id, query.CompanyId, default);
+        Assert.Equal(1, summary!.ValidationIssueCount); Assert.Equal(1, summary.MetadataIssueCount);
+        Assert.Equal(summary.DiscoveredCount, summary.DownloadedCount + summary.FailedCount);
+        var listed = await jobs.DocumentsAsync(run.Id, query.CompanyId, 0, 100, default);
+        Assert.Equal("valid", listed!.Items[0].GetProperty("validation").GetProperty("status").GetString());
+        Assert.Equal("partial", listed.Items[0].GetProperty("metadataParseStatus").GetString());
+    }
+    [PostgresFact]
+    public async Task Recovery_RevalidatesLegacyFilesAndRejectsInvalidStoredContent()
+    {
+        await using var provider = await Provider(new StubParser());
+        var xml = DocumentValidatorTests.Fixture(); var key = DocumentValidatorTests.AccessKey(xml);
+        var query = Query(); var run = await Start(provider, query);
+        await Progress(provider, run.Id, run.Attempt, query).SaveAsync(Document(key), default);
+        await using var db = await provider.GetRequiredService<IDbContextFactory<CrawlerDbContext>>().CreateDbContextAsync();
+        var row = await db.Results.SingleAsync(x => x.ExtractionId == run.Id);
+        var old = JsonNode.Parse(row.ResponseJson)!.AsObject(); old.Remove("validation"); old.Remove("storageStatus");
+        row.ResponseJson = old.ToJsonString(); row.ValidationStatus = DocumentValidationStatus.NotChecked; row.FileHash = null;
+        var file = await db.Files.SingleAsync(x => x.Id == row.FileId); file.Sha256 = null;
+        await db.SaveChangesAsync();
+        var storage = (MemoryStorage)provider.GetRequiredService<IDocumentStorage>(); storage.Bytes = Encoding.UTF8.GetBytes(xml);
+        var recovered = await Progress(provider, run.Id, run.Attempt, query).FindSavedAsync(key, 2, 4, default);
+        Assert.NotNull(recovered); Assert.Equal(DocumentValidationStatus.Valid, recovered.Validation.Status);
+        Assert.Equal(MetadataParseStatus.NotChecked, recovered.MetadataParseStatus);
+        Assert.Null(recovered.Metadata!.SourceValues);
+        Assert.Equal(1, storage.Reads);
+        Assert.NotNull(await Progress(provider, run.Id, run.Attempt, query).FindSavedAsync(key, 2, 4, default));
+        Assert.Equal(1, storage.Reads);
+        await db.Entry(row).ReloadAsync(); row.ResponseJson = old.ToJsonString();
+        await db.SaveChangesAsync(); storage.Bytes = "<html>error</html>"u8.ToArray();
+        Assert.Null(await Progress(provider, run.Id, run.Attempt, query).FindSavedAsync(key, 2, 4, default));
+        await db.Entry(file).ReloadAsync();
+        Assert.Equal(recovered.Validation.Sha256, file.Sha256);
+    }
+    [PostgresFact]
+    public async Task Reprocessor_ValidatesWithoutMutatingHistoricalResultsOrErasingConversions()
+    {
+        await using var provider = await Provider(new StubParser());
+        var xml = DocumentValidatorTests.Fixture(); var key = DocumentValidatorTests.AccessKey(xml);
+        var query = Query(); var run = await Start(provider, query);
+        await Progress(provider, run.Id, run.Attempt, query).SaveAsync(Document(key), default);
+        await using var db = await provider.GetRequiredService<IDbContextFactory<CrawlerDbContext>>().CreateDbContextAsync();
+        var row = await db.Results.SingleAsync(x => x.ExtractionId == run.Id); var historical = row.ResponseJson;
+        var storage = (MemoryStorage)provider.GetRequiredService<IDocumentStorage>(); storage.Bytes = Encoding.UTF8.GetBytes(xml);
+        using var scope = provider.CreateScope(); var reprocessor = scope.ServiceProvider.GetRequiredService<DocumentReprocessor>();
+        await reprocessor.ReprocessAsync(row.FileId!.Value, query.CompanyId, query.User, default);
+        Assert.Equal(2, await db.Conversions.CountAsync(x => x.DocumentId == row.DocumentId));
+        storage.Bytes = "<html>error</html>"u8.ToArray();
+        await Assert.ThrowsAsync<InvalidOperationException>(() => reprocessor.ReprocessAsync(row.FileId.Value, query.CompanyId, query.User, default));
+        Assert.Equal(2, await db.Conversions.CountAsync(x => x.DocumentId == row.DocumentId));
+        await db.Entry(row).ReloadAsync(); Assert.Equal(historical, row.ResponseJson);
+    }
 
     [PostgresFact]
     public async Task Acceptance_IsAtomicIdempotentAndDoesNotPersistPlainPassword()
@@ -177,7 +264,7 @@ public sealed class PostgresJobTests
         var runner = new StubRunner();
         var worker = new ExtractionWorker(provider.GetRequiredService<IDbContextFactory<CrawlerDbContext>>(), runner,
             provider.GetRequiredService<CredentialCipher>(), provider.GetRequiredService<ISriDocumentJsonParser>(), provider.GetRequiredService<IDocumentStorage>(),
-            provider.GetRequiredService<IBackgroundJobClient>(), Microsoft.Extensions.Options.Options.Create(OptionsValue), NullLogger<ExtractionWorker>.Instance);
+            provider.GetRequiredService<IBackgroundJobClient>(), Microsoft.Extensions.Options.Options.Create(OptionsValue), NullLogger<ExtractionWorker>.Instance, provider.GetRequiredService<IDocumentValidator>(), provider.GetRequiredService<IOptions<DocumentValidationOptions>>());
         await worker.ExecuteAsync(accepted.ExtractionId, default);
         await worker.ExecuteAsync(accepted.ExtractionId, default);
         Assert.Equal(1, runner.Calls);
@@ -226,7 +313,7 @@ public sealed class PostgresJobTests
         ExtractionWorker Worker(IReceivedExtractionRunner runner) => new(factory, runner,
             provider.GetRequiredService<CredentialCipher>(), provider.GetRequiredService<ISriDocumentJsonParser>(),
             provider.GetRequiredService<IDocumentStorage>(), provider.GetRequiredService<IBackgroundJobClient>(),
-            Microsoft.Extensions.Options.Options.Create(OptionsValue), NullLogger<ExtractionWorker>.Instance);
+            Microsoft.Extensions.Options.Options.Create(OptionsValue), NullLogger<ExtractionWorker>.Instance, provider.GetRequiredService<IDocumentValidator>(), provider.GetRequiredService<IOptions<DocumentValidationOptions>>());
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() => Worker(new ShutdownRunner(stop)).ExecuteAsync(accepted.ExtractionId, stop.Token));
         await using (var db = await factory.CreateDbContextAsync())
         {
@@ -308,7 +395,7 @@ public sealed class PostgresJobTests
         var runner = new StubRunner();
         var worker = new ExtractionWorker(provider.GetRequiredService<IDbContextFactory<CrawlerDbContext>>(), runner,
             provider.GetRequiredService<CredentialCipher>(), provider.GetRequiredService<ISriDocumentJsonParser>(), provider.GetRequiredService<IDocumentStorage>(),
-            provider.GetRequiredService<IBackgroundJobClient>(), Microsoft.Extensions.Options.Options.Create(OptionsValue), NullLogger<ExtractionWorker>.Instance);
+            provider.GetRequiredService<IBackgroundJobClient>(), Microsoft.Extensions.Options.Options.Create(OptionsValue), NullLogger<ExtractionWorker>.Instance, provider.GetRequiredService<IDocumentValidator>(), provider.GetRequiredService<IOptions<DocumentValidationOptions>>());
         await worker.ExecuteAsync(accepted.ExtractionId, default);
         Assert.Equal(0, runner.Calls);
         await using var db = await provider.GetRequiredService<IDbContextFactory<CrawlerDbContext>>().CreateDbContextAsync();
@@ -318,7 +405,7 @@ public sealed class PostgresJobTests
     {
         public override object ActivateJob(Type type) => new ExtractionWorker(provider.GetRequiredService<IDbContextFactory<CrawlerDbContext>>(), new StubRunner(),
             provider.GetRequiredService<CredentialCipher>(), provider.GetRequiredService<ISriDocumentJsonParser>(), provider.GetRequiredService<IDocumentStorage>(),
-            provider.GetRequiredService<IBackgroundJobClient>(), Microsoft.Extensions.Options.Options.Create(OptionsValue), NullLogger<ExtractionWorker>.Instance);
+            provider.GetRequiredService<IBackgroundJobClient>(), Microsoft.Extensions.Options.Options.Create(OptionsValue), NullLogger<ExtractionWorker>.Instance, provider.GetRequiredService<IDocumentValidator>(), provider.GetRequiredService<IOptions<DocumentValidationOptions>>());
     }
 
 
@@ -333,7 +420,7 @@ public sealed class PostgresJobTests
         var runner = new InterruptibleRunner();
         var worker = new ExtractionWorker(provider.GetRequiredService<IDbContextFactory<CrawlerDbContext>>(), runner,
             provider.GetRequiredService<CredentialCipher>(), provider.GetRequiredService<ISriDocumentJsonParser>(), provider.GetRequiredService<IDocumentStorage>(),
-            provider.GetRequiredService<IBackgroundJobClient>(), Microsoft.Extensions.Options.Options.Create(OptionsValue), NullLogger<ExtractionWorker>.Instance);
+            provider.GetRequiredService<IBackgroundJobClient>(), Microsoft.Extensions.Options.Options.Create(OptionsValue), NullLogger<ExtractionWorker>.Instance, provider.GetRequiredService<IDocumentValidator>(), provider.GetRequiredService<IOptions<DocumentValidationOptions>>());
         await worker.ExecuteAsync(accepted.ExtractionId, default);
         var pending = await jobs.GetAsync(accepted.ExtractionId, query.CompanyId, default);
         Assert.Equal(JobStatus.Retrying, pending!.JobStatus); Assert.Equal(1, pending.DownloadedCount);
@@ -404,8 +491,11 @@ public sealed class PostgresJobTests
     }
     private sealed class MemoryStorage : IDocumentStorage
     {
+        public byte[] Bytes { get; set; } = Encoding.UTF8.GetBytes("fixture");
+        public int Reads { get; private set; }
         public Task<Models.Storage.DocumentStorageReference> SaveAsync(DocumentStorageContext context, DocumentContent content, CancellationToken cancellationToken = default) => throw new NotSupportedException();
-        public Task<Stream> OpenReadAsync(DocumentStorageReference reference, CancellationToken cancellationToken = default) => Task.FromResult<Stream>(new MemoryStream(Encoding.UTF8.GetBytes("fixture")));
+        public Task<Stream> OpenReadAsync(DocumentStorageReference reference, CancellationToken cancellationToken = default) => Task.FromResult<Stream>(Open());
+        private Stream Open() { Reads++; return new MemoryStream(Bytes); }
     }
     private sealed class StubRunner : IReceivedExtractionRunner
     {

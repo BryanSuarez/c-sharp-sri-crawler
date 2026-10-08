@@ -1,15 +1,17 @@
 using DescagaCompronanteSRI.Contracts;
+using Microsoft.Extensions.Options;
+using DescagaCompronanteSRI.Validation;
 using DescagaCompronanteSRI.Models.Enums;
 using DescagaCompronanteSRI.Models.Extraction;
 
 namespace DescagaCompronanteSRI.Services.ReceivedDocuments;
 
-public sealed class PdfDocumentDownloadStrategy(ILogger<PdfDocumentDownloadStrategy> logger) : IDocumentDownloadStrategy
+public sealed class PdfDocumentDownloadStrategy(ILogger<PdfDocumentDownloadStrategy> logger, IOptions<DocumentValidationOptions>? options = null) : IDocumentDownloadStrategy
 {
     public DownloadFormat Format => DownloadFormat.Pdf;
 
     public async Task<OperationResult<DocumentContent>> DownloadAsync(
-        IReceivedDocumentsSession session, ReceivedDocumentReference document)
+        IReceivedDocumentsSession session, ReceivedDocumentReference document, CancellationToken token = default)
     {
         if (string.IsNullOrEmpty(document.PdfLinkId))
             return OperationResult<DocumentContent>.Failure(ExtractionErrorCode.DownloadFailed, "PDF download link is missing.");
@@ -25,24 +27,26 @@ public sealed class PdfDocumentDownloadStrategy(ILogger<PdfDocumentDownloadStrat
                         if (typeof mojarra !== 'undefined') mojarra.jsfcljs(form, {[linkId]: linkId}, '');
                         else if (typeof PrimeFaces !== 'undefined') PrimeFaces.ab({ s: linkId, u: linkId });
                         else document.getElementById(linkId)?.click();
-                    }", document.PdfLinkId), new() { Timeout = 40_000 });
+                    }", document.PdfLinkId), new() { Timeout = 40_000 }).WaitAsync(token);
                 await using var source = await download.CreateReadStreamAsync();
                 content = new MemoryStream();
-                await source.CopyToAsync(content);
+                await BoundedDocumentStream.CopyAsync(source, content, options?.Value.MaxPdfBytes ?? 20 * 1024 * 1024, token);
                 content.Position = 0;
-                var header = new byte[4];
-                var read = await content.ReadAsync(header);
-                content.Position = 0;
-                if (read == 4 && header.AsSpan().SequenceEqual("%PDF"u8))
-                    return OperationResult<DocumentContent>.Success(new(content, Format));
-                await Task.Delay(SriRetryPolicy.DownloadBackoff(attempt));
+                var completed = content;
+                content = null;
+                return OperationResult<DocumentContent>.Success(new(completed, Format));
             }
+            catch (DocumentSizeLimitException)
+            {
+                return OperationResult<DocumentContent>.Failure(ExtractionErrorCode.InputTooLarge, "PDF exceeds the configured size limit.");
+            }
+            catch (OperationCanceledException) when (token.IsCancellationRequested) { throw; }
             catch (Exception exception)
             {
                 logger.LogWarning(exception, "PDF download attempt {Attempt} failed.", attempt);
-                await Task.Delay(SriRetryPolicy.DownloadBackoff(attempt));
+                await Task.Delay(SriRetryPolicy.DownloadBackoff(attempt), token);
             }
-            if (content is not null) await content.DisposeAsync();
+            finally { if (content is not null) await content.DisposeAsync(); }
         }
         return OperationResult<DocumentContent>.Failure(ExtractionErrorCode.DownloadFailed, "PDF download attempts were exhausted.");
     }

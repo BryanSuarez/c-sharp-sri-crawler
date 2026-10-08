@@ -86,9 +86,24 @@ namespace DescagaCompronanteSRI.Persistence.Migrations
                     b.Property<int>("Month")
                         .HasColumnType("integer");
 
+                    b.Property<string>("Sha256")
+                        .HasColumnType("text");
+
+                    b.Property<long?>("SizeBytes")
+                        .HasColumnType("bigint");
+
                     b.Property<string>("StorageJson")
                         .IsRequired()
                         .HasColumnType("jsonb");
+
+                    b.Property<string>("ValidationJson")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("jsonb")
+                        .HasDefaultValue("{}");
+
+                    b.Property<int>("ValidationStatus")
+                        .HasColumnType("integer");
 
                     b.Property<int>("Year")
                         .HasColumnType("integer");
@@ -181,6 +196,12 @@ namespace DescagaCompronanteSRI.Persistence.Migrations
 
                     NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<long>("Id"));
 
+                    b.Property<decimal?>("Amount")
+                        .HasColumnType("numeric");
+
+                    b.Property<DateTimeOffset?>("AuthorizedAt")
+                        .HasColumnType("timestamp with time zone");
+
                     b.Property<long?>("ConversionId")
                         .HasColumnType("bigint");
 
@@ -193,6 +214,9 @@ namespace DescagaCompronanteSRI.Persistence.Migrations
                     b.Property<Guid>("ExtractionId")
                         .HasColumnType("uuid");
 
+                    b.Property<string>("FileHash")
+                        .HasColumnType("text");
+
                     b.Property<long?>("FileId")
                         .HasColumnType("bigint");
 
@@ -200,7 +224,13 @@ namespace DescagaCompronanteSRI.Persistence.Migrations
                         .IsRequired()
                         .HasColumnType("text");
 
+                    b.Property<DateOnly?>("IssuedDate")
+                        .HasColumnType("date");
+
                     b.Property<int>("JsonStatus")
+                        .HasColumnType("integer");
+
+                    b.Property<int>("MetadataParseStatus")
                         .HasColumnType("integer");
 
                     b.Property<string>("ResponseJson")
@@ -209,6 +239,27 @@ namespace DescagaCompronanteSRI.Persistence.Migrations
 
                     b.Property<Guid>("SeenAttemptId")
                         .HasColumnType("uuid");
+
+                    b.Property<string>("SourceValuesJson")
+                        .HasColumnType("jsonb");
+
+                    b.Property<int>("StorageStatus")
+                        .HasColumnType("integer");
+
+                    b.Property<decimal?>("Taxes")
+                        .HasColumnType("numeric");
+
+                    b.Property<decimal?>("Total")
+                        .HasColumnType("numeric");
+
+                    b.Property<string>("ValidationJson")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("jsonb")
+                        .HasDefaultValue("{}");
+
+                    b.Property<int>("ValidationStatus")
+                        .HasColumnType("integer");
 
                     b.HasKey("Id");
 

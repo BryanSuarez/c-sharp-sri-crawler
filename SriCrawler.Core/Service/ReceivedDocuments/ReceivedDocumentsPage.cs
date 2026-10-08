@@ -11,7 +11,7 @@ using Microsoft.Playwright;
 
 namespace DescagaCompronanteSRI.Services.ReceivedDocuments;
 
-public sealed class ReceivedDocumentsPage(ILogger<ReceivedDocumentsPage> logger, IOptions<ReceivedDocumentsPaginationOptions> options) : IReceivedDocumentsPage
+public sealed class ReceivedDocumentsPage(ILogger<ReceivedDocumentsPage> logger, IOptions<ReceivedDocumentsPaginationOptions> options, ReceivedDocumentMetadataParser? metadataParser = null) : IReceivedDocumentsPage
 {
     public const string Url = "https://srienlinea.sri.gob.ec/comprobantes-electronicos-internet/pages/consultas/recibidos/comprobantesRecibidos.jsf";
     public async Task<bool> OpenAsync(IReceivedDocumentsSession session)
@@ -167,7 +167,7 @@ public sealed class ReceivedDocumentsPage(ILogger<ReceivedDocumentsPage> logger,
     private static OperationResult<ReceivedDocumentsPageSnapshot> Failure(ExtractionErrorCode code, string message) =>
         OperationResult<ReceivedDocumentsPageSnapshot>.Failure(code, message);
 
-    private static async Task<OperationResult<ReceivedDocumentsPageSnapshot>> SnapshotAsync(IPage page, ExtractionErrorCode failureCode)
+    private async Task<OperationResult<ReceivedDocumentsPageSnapshot>> SnapshotAsync(IPage page, ExtractionErrorCode failureCode)
     {
         // Capture metadata and references in the same browser turn to avoid mixing two page states.
         var capture = await page.EvaluateAsync<JsonElement>(
@@ -180,7 +180,7 @@ public sealed class ReceivedDocumentsPage(ILogger<ReceivedDocumentsPage> logger,
         foreach (var row in data.EnumerateArray())
         {
             ReceivedDocumentReference? document;
-            try { document = ReceivedDocumentsTableParser.ParseRow(row.GetProperty("html").GetString()!); }
+            try { document = ReceivedDocumentsTableParser.ParseRow(row.GetProperty("html").GetString()!, metadataParser); }
             catch (Exception) { document = null; }
             rows.Add(new(rows.Count, document is null
                 ? OperationResult<ReceivedDocumentReference>.Failure(ExtractionErrorCode.RowReadFailed, "The document row could not be read.")

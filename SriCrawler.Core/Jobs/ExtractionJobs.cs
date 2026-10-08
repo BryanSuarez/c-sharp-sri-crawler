@@ -17,7 +17,19 @@ public sealed class ExtractionJobs(CrawlerDbContext db, CredentialCipher cipher,
 {
     public static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
     public static string Serialize<T>(T value) => JsonSerializer.Serialize(value, Json);
-    public static T Deserialize<T>(string value) => JsonSerializer.Deserialize<T>(value, Json)!;
+    public static T Deserialize<T>(string value)
+    {
+        var result = JsonSerializer.Deserialize<T>(value, Json)!;
+        if (result is ReceivedDocumentResponse { DownloadStatus: DocumentDownloadStatus.Downloaded,
+            StorageStatus: DocumentStorageStatus.NotAttempted, Storage: not null } response)
+        {
+            // Historical snapshots predate storageStatus. Infer only for a missing field;
+            // new results must report storage independently and explicitly.
+            using var historical = JsonDocument.Parse(value);
+            if (!historical.RootElement.TryGetProperty("storageStatus", out _)) response.StorageStatus = DocumentStorageStatus.Stored;
+        }
+        return result;
+    }
 
     public async Task<ExtractionAccepted> AcceptAsync(ReceivedDocumentsQuery query, Guid? requestId, CancellationToken token)
     {
@@ -83,13 +95,15 @@ public sealed class ExtractionJobs(CrawlerDbContext db, CredentialCipher cipher,
         {
             Total = g.Count(), Saved = g.Count(x => x.DownloadStatus == DocumentDownloadStatus.Downloaded),
             ConversionFailed = g.Count(x => x.JsonStatus == DocumentParseStatus.Failed),
-            Unsupported = g.Count(x => x.JsonStatus == DocumentParseStatus.Unsupported)
+            Unsupported = g.Count(x => x.JsonStatus == DocumentParseStatus.Unsupported),
+            ValidationIssues = g.Count(x => x.ValidationStatus == DocumentValidationStatus.Invalid || x.ValidationStatus == DocumentValidationStatus.Unsupported || x.ValidationStatus == DocumentValidationStatus.Failed),
+            MetadataIssues = g.Count(x => x.MetadataParseStatus == MetadataParseStatus.Partial || x.MetadataParseStatus == MetadataParseStatus.Failed)
         }).SingleOrDefaultAsync(token);
         var count = counts?.Total ?? 0;
         var saved = counts?.Saved ?? 0;
         return new(e.Id, e.CompanyId, e.TaxpayerId, e.JobStatus, e.ExtractionStatus, e.Stage, e.AttemptCount,
             e.CreatedAt, e.StartedAt, e.FinishedAt, e.LastActivityAt, count, saved, count - saved,
-            counts?.ConversionFailed ?? 0, counts?.Unsupported ?? 0, Deserialize<PaginationProgress>(e.PaginationJson));
+            counts?.ConversionFailed ?? 0, counts?.Unsupported ?? 0, Deserialize<PaginationProgress>(e.PaginationJson), counts?.ValidationIssues ?? 0, counts?.MetadataIssues ?? 0);
     }
     public async Task<CursorPage<JsonElement>?> DocumentsAsync(Guid id, string companyId, long cursor, int limit, CancellationToken token)
     {
@@ -103,7 +117,7 @@ public sealed class ExtractionJobs(CrawlerDbContext db, CredentialCipher cipher,
             {
                 documentId = x.Id, e.CompanyId, e.TaxpayerId, response.PageNumber, response.RowIndex,
                 response.Metadata, response.DownloadFormat, response.DownloadStatus, response.ParseStatus,
-                jsonParseStatus = x.JsonStatus, response.Storage, response.FilePath, response.Errors
+                jsonParseStatus = x.JsonStatus, response.Validation, response.StorageStatus, response.MetadataParseStatus, response.Storage, response.FilePath, response.Errors
             }, Json);
         }).ToList();
         return new(items, rows.Count > limit ? rows[limit - 1].Id.ToString(System.Globalization.CultureInfo.InvariantCulture) : null);

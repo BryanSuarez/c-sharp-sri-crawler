@@ -122,6 +122,10 @@ Supported: invoices, purchase settlements, credit/debit notes and withholdings. 
 
 Known dependency behavior verified by fixtures: several invoice payments are emitted in `infoDocumento.pago` as an object with numeric keys. Product taxes can be an object or an array. Do not assume a normalized accounting schema. Stored XML is the authority for additional normalization or dependency corrections.
 
+## Metadata and file validation
+
+Received downloads now require valid XML/PDF, confirmed storage and persistence. Amounts can be null, normalized dates accompany the original text, and file validation, storage and parsing have independent states. Summary includes `validationIssueCount` and `metadataIssueCount`; lists/detail expose validation evidence and metadata states. See [metadata and file validation](RECEIVED_DOCUMENT_VALIDATION.md) for formats, schema versions, limits, historical compatibility and the additive migration.
+
 ## Recovery and limits
 
 An extraction and its outbox entry are committed together. Publishing into Hangfire is retried by the worker; duplicate delivery is expected and guarded. PostgreSQL advisory locks serialize sessions for the same queried taxpayer across companies. Loss of the lock connection cancels the browser execution. Sliding invisibility protects long Hangfire jobs; the database remains essential to operation.
@@ -160,4 +164,4 @@ The PostgreSQL results each reference a conversion and preserve the queried taxp
 
 The automated container entrypoint probe checks graceful signal forwarding, normal restart and recovery after SIGKILL, without contacting SRI. Run it with `bash scripts/test-container-entrypoint.sh sri-crawler-worker` after building the worker image. SRI availability and CAPTCHA acceptance remain external dependencies; bounded rejection is reported explicitly.
 
-No webhooks, frontend, nightly scheduler, authentication, signed URLs, historical migration or issued-contract changes are included. Real R2 validation requires R2 credentials and remains pending. The real acceptance above covers XML; PDF behavior is covered by the existing strategy/storage/coordination regressions, not by this asynchronous SRI acceptance run.
+No webhooks, frontend, nightly scheduler, authentication, signed URLs, historical migration or issued-contract changes are included. Real R2 validation requires R2 credentials and remains pending. The earlier recovery acceptance above covers XML. The subsequent metadata/file-validation block also completed real 306-document XML and PDF extractions in isolated local storage; see [the validation acceptance record](RECEIVED_DOCUMENT_VALIDATION.md#real-acceptance-october-7-2026).

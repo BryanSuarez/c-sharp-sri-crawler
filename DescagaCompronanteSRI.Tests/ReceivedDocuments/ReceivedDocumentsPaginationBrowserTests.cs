@@ -1,4 +1,5 @@
 using System.Text.Json;
+using DescagaCompronanteSRI.Tests.Validation;
 using DescagaCompronanteSRI.Contracts;
 using DescagaCompronanteSRI.Helpers;
 using DescagaCompronanteSRI.Models.Dtos;
@@ -32,14 +33,16 @@ public sealed class ReceivedDocumentsPaginationBrowserTests
                 .DownloadAsync(fixture, document);
             Assert.True(xml.IsSuccess);
             await using (var content = xml.Value!)
-            using (var reader = new StreamReader(content.Stream))
-                Assert.Contains($"<secuencial>{number}</secuencial>", await reader.ReadToEndAsync());
+            {
+                Assert.Equal(DocumentValidationStatus.Valid, (await DocumentValidatorTests.Validator().ValidateAsync(content, DocumentType.Invoice, document.Metadata.AuthorizationNumber)).Status);
+                using var reader = new StreamReader(content.Stream);
+                Assert.Contains($"<secuencial>{number:D9}</secuencial>", await reader.ReadToEndAsync());
+            }
             var pdf = await new PdfDocumentDownloadStrategy(NullLogger<PdfDocumentDownloadStrategy>.Instance)
                 .DownloadAsync(fixture, document);
             Assert.True(pdf.IsSuccess);
             await using (var content = pdf.Value!)
-            using (var reader = new StreamReader(content.Stream))
-                Assert.Contains($"Synthetic page {number}", await reader.ReadToEndAsync());
+                Assert.Equal(DocumentValidationStatus.Valid, (await DocumentValidatorTests.Validator().ValidateAsync(content, DocumentType.Invoice, document.Metadata.AuthorizationNumber)).Status);
             if (snapshot.HasNextPage == true) result = await fixture.PageObject.MoveNextAsync(fixture, snapshot);
         }
         Assert.Equal(2, fixture.NavigationRequests);
@@ -210,7 +213,7 @@ public sealed class ReceivedDocumentsPaginationBrowserTests
                 window.mojarra = { jsfcljs: (form, parameters) => {
                     if (!document.getElementById(Object.keys(parameters)[0])) throw new Error('Stale JSF reference');
                     const link = document.createElement('a');
-                    link.href = URL.createObjectURL(new Blob(['%PDF-1.4\nSynthetic page ' + (current + 1)], { type: 'application/pdf' }));
+                    link.href = URL.createObjectURL(new Blob([Uint8Array.from(atob(PDF_DATA[current]), c => c.charCodeAt(0))], { type: 'application/pdf' }));
                     link.download = 'document.pdf'; document.body.appendChild(link); link.click();
                 }};
                 if (LEGACY_WIDGET) {
@@ -226,6 +229,7 @@ public sealed class ReceivedDocumentsPaginationBrowserTests
                 </script></body></html>
                 """.Replace("CROSS_ORIGIN_FRAME", legacyWidget ? "<iframe src='https://sri-fixture-frame.test/frame'></iframe>" : "")
                 .Replace("INITIAL", rows[2]).Replace("ROWS", JsonSerializer.Serialize(rows))
+                .Replace("PDF_DATA", JsonSerializer.Serialize(Enumerable.Range(1, 3).Select(number => Convert.ToBase64String(DocumentValidatorTests.Pdf(text: "CLAVE DE ACCESO: " + number.ToString().PadLeft(49, '0')))).ToArray()))
                 .Replace("MISSING_TABLE", missingTable ? "true" : "false")
                 .Replace("MISSING", missingPaginator ? "true" : "false")
                 .Replace("ADVANCE_EARLY", advanceEarly ? "true" : "false")
@@ -259,7 +263,7 @@ public sealed class ReceivedDocumentsPaginationBrowserTests
                     var number = int.Parse(key.Split(':')[2]) + 1;
                     Assert.Contains($"page-{number - 1}", form["javax.faces.ViewState"].ToString());
                     await route.FulfillAsync(new() { ContentType = "text/xml", Body =
-                        $"<factura id=\"comprobante\"><infoTributaria><secuencial>{number}</secuencial></infoTributaria></factura>" });
+                        DocumentValidatorTests.Fixture().Replace(DocumentValidatorTests.AccessKey(DocumentValidatorTests.Fixture()), number.ToString().PadLeft(49, '0')).Replace("<secuencial>000000000</secuencial>", $"<secuencial>{number:D9}</secuencial>") });
                 }
             });
             Assert.True(await fixture.PageObject.OpenAsync(fixture));

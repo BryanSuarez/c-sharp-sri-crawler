@@ -10,6 +10,9 @@ public sealed class ReceivedDocumentResponse
     public ReceivedDocumentMetadata? Metadata { get; set; }
     public DownloadFormat DownloadFormat { get; init; }
     public DocumentDownloadStatus DownloadStatus { get; set; } = DocumentDownloadStatus.Failed;
+    public DocumentValidationResult Validation { get; set; } = new();
+    public DocumentStorageStatus StorageStatus { get; set; } = DocumentStorageStatus.NotAttempted;
+    public MetadataParseStatus MetadataParseStatus => Metadata?.MetadataParseStatus ?? MetadataParseStatus.NotChecked;
     public DocumentParseStatus ParseStatus { get; set; } = DocumentParseStatus.NotApplicable;
     public DocumentStorageReference? Storage { get; set; }
     public string? FilePath { get; set; }

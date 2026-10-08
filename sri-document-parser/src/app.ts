@@ -4,7 +4,7 @@ import { convertXml, ParseFailure } from './parser.js';
 // The dependency logs caught errors. Avoid leaking XML through its console diagnostics.
 console.error = () => {};
 export function buildApp(maxBytes = 20 * 1024 * 1024, converter = convertXml) {
-  const app = Fastify({ logger: false, bodyLimit: maxBytes });
+  const app = Fastify({ logger: false, bodyLimit: maxBytes * 6 + 1024 });
   let busy = false;
   app.get('/health', async () => ({ status: 'ready', parserName: 'taxo-sri-xml-2-json', parserVersion: '1.8.0' }));
   app.post<{ Body: { requestId: string; xml: string } }>('/parse', {

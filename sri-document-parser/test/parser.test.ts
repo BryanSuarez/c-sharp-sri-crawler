@@ -84,3 +84,15 @@ test('a busy instance rejects extra conversions and stays available for health c
     assert.equal((await first).statusCode, 200);
   } finally { finish(); await app.close(); }
 });
+
+
+test('XML byte quota is independent of JSON escaping overhead', async () => {
+  const xml = `<factura>${'"\\'.repeat(100)}</factura>`;
+  const maxBytes = Buffer.byteLength(xml);
+  const app = buildApp(maxBytes, async () => ({ status: 'parsed', parserName: 'fixture', parserVersion: '1', documentType: 'factura', documentJson: {} }));
+  try {
+    const response = await app.inject({ method: 'POST', url: '/parse', payload: { requestId: 'escaping', xml } });
+    assert.equal(response.statusCode, 200, response.body);
+    assert.equal((await app.inject({ method: 'POST', url: '/parse', payload: { requestId: 'escaping', xml: xml + 'x' } })).statusCode, 413);
+  } finally { await app.close(); }
+});

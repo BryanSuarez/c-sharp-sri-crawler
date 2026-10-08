@@ -1,4 +1,6 @@
 using System.Text;
+using System.Text.Json;
+using DescagaCompronanteSRI.Tests.Validation;
 using Microsoft.Extensions.Options;
 using DescagaCompronanteSRI.Contracts;
 using DescagaCompronanteSRI.Helpers;
@@ -19,7 +21,7 @@ public class ReceivedDocumentsBrowserTests
     {
         await using var browser = await PlaywrightSession.CreateAsync();
         var row = File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "Fixtures", "received-row.html"));
-        const string xml = "<factura id=\"comprobante\" version=\"1.0.0\"><infoTributaria><ruc>1790012345001</ruc></infoTributaria></factura>";
+        var xml = DocumentValidatorTests.Fixture().Replace(DocumentValidatorTests.AccessKey(DocumentValidatorTests.Fixture()), "1234567890123456789012345678901234567890123456789");
         var html = """
             <html><body><form id="frmPrincipal">
             <input name="javax.faces.ViewState" value="012345678901234567890123456789"/>
@@ -38,12 +40,12 @@ public class ReceivedDocumentsBrowserTests
             };
             window.mojarra = { jsfcljs: function() {
                 const link = document.createElement('a');
-                link.href = URL.createObjectURL(new Blob(['%PDF-1.4\nSynthetic test'], {type:'application/pdf'}));
+                link.href = URL.createObjectURL(new Blob([Uint8Array.from(atob(PDF_DATA), c => c.charCodeAt(0))], {type:'application/pdf'}));
                 link.download = 'sample.pdf';
                 document.body.appendChild(link); link.click();
             }};
             </script></body></html>
-            """.Replace("ROW", row);
+            """.Replace("ROW", row).Replace("PDF_DATA", JsonSerializer.Serialize(Convert.ToBase64String(DocumentValidatorTests.Pdf(text: "CLAVE DE ACCESO: 1234567890123456789012345678901234567890123456789"))));
         await browser.Page.RouteAsync("**/*", route => route.FulfillAsync(new()
         {
             Status = 200,
@@ -68,6 +70,7 @@ public class ReceivedDocumentsBrowserTests
             .DownloadAsync(session, document);
         Assert.True(xmlResult.IsSuccess);
         await using var xmlContent = xmlResult.Value!;
+        Assert.Equal(DocumentValidationStatus.Valid, (await DocumentValidatorTests.Validator().ValidateAsync(xmlContent, DocumentType.Invoice, document.Metadata.AuthorizationNumber)).Status);
         var parsed = await parser.ParseAsync(xmlContent, DocumentType.Invoice);
         Assert.Equal(DocumentParseStatus.Parsed, parsed.Status);
 
@@ -75,6 +78,7 @@ public class ReceivedDocumentsBrowserTests
             .DownloadAsync(session, document);
         Assert.True(pdfResult.IsSuccess);
         await using var pdfContent = pdfResult.Value!;
+        Assert.Equal(DocumentValidationStatus.Valid, (await DocumentValidatorTests.Validator().ValidateAsync(pdfContent, DocumentType.Invoice, document.Metadata.AuthorizationNumber)).Status);
         using var reader = new StreamReader(pdfContent.Stream, Encoding.UTF8, leaveOpen: true);
         Assert.StartsWith("%PDF", await reader.ReadToEndAsync());
 
@@ -85,6 +89,16 @@ public class ReceivedDocumentsBrowserTests
             Assert.StartsWith("%PDF", await File.ReadAllTextAsync(path));
         }
         finally { File.Delete(path); }
+
+        var limits = Options.Create(new DescagaCompronanteSRI.Validation.DocumentValidationOptions { MaxXmlBytes = 16, MaxPdfBytes = 16 });
+        var oversizedXml = await new XmlDocumentDownloadStrategy(parser, NullLogger<XmlDocumentDownloadStrategy>.Instance, limits)
+            .DownloadAsync(session, document);
+        var oversizedPdf = await new PdfDocumentDownloadStrategy(NullLogger<PdfDocumentDownloadStrategy>.Instance, limits)
+            .DownloadAsync(session, document);
+        Assert.Equal(ExtractionErrorCode.InputTooLarge, oversizedXml.Error!.Code);
+        Assert.Equal(ExtractionErrorCode.InputTooLarge, oversizedPdf.Error!.Code);
+        Assert.Null(oversizedXml.Value);
+        Assert.Null(oversizedPdf.Value);
     }
 
     private sealed class BrowserSession(PlaywrightSession session) : IReceivedDocumentsSession

@@ -172,12 +172,12 @@ public class ReceivedDocumentsServiceTests
     }
 
     [Fact]
-    public async Task Query_InvalidAccessKeyIsReportedAsStorageFailure()
+    public async Task Query_InvalidAccessKeyIsRejectedBeforeStorage()
     {
         var response = await new Scenario { InvalidAccessKey = true }.Service.QueryAsync(Query());
         Assert.Equal(0, response.DownloadedCount);
         Assert.Null(response.Documents[0].Storage);
-        Assert.Equal(ExtractionErrorCode.StorageFailed, response.Documents[0].Errors.Single().Code);
+        Assert.Equal(ExtractionErrorCode.InvalidDocument, response.Documents[0].Errors.Single().Code);
     }
 
     [Fact]
@@ -188,6 +188,55 @@ public class ReceivedDocumentsServiceTests
         Assert.Equal(2025, scenario.LastStorageContext!.Year);
         Assert.Equal(1, scenario.LastStorageContext.Month);
         Assert.StartsWith("acme/1790012345001/2025/01/received/invoice/", response.Documents[0].Storage!.Key);
+    }
+
+    [Fact]
+    public async Task Query_RejectsInvalidContentBeforeStorageOrParsing()
+    {
+        var scenario = new Scenario { InvalidContent = true, ThrowOnParse = true };
+        var response = await scenario.Service.QueryAsync(Query());
+        var document = Assert.Single(response.Documents);
+        Assert.Equal(DocumentValidationStatus.Invalid, document.Validation.Status);
+        Assert.Equal(DocumentStorageStatus.NotAttempted, document.StorageStatus);
+        Assert.Equal(DocumentParseStatus.NotApplicable, document.ParseStatus);
+        Assert.Equal(0, scenario.SaveCount);
+        Assert.Equal(1, response.ValidationIssueCount);
+        Assert.True(scenario.Session.Disposed);
+        Assert.All(scenario.Contents, content => Assert.False(content.Stream.CanRead));
+    }
+    [Fact]
+    public async Task Query_MetadataIssueDoesNotPreventValidDownload()
+    {
+        var scenario = new Scenario { MetadataIssue = true };
+        var response = await scenario.Service.QueryAsync(Query());
+        var document = Assert.Single(response.Documents);
+        Assert.Equal(1, response.DownloadedCount);
+        Assert.Equal(1, response.MetadataIssueCount);
+        Assert.Equal(MetadataParseStatus.Partial, document.MetadataParseStatus);
+        Assert.Equal("amount", Assert.Single(document.Errors).Field);
+        Assert.Equal(1, document.Errors[0].PageNumber);
+    }
+
+    [Fact]
+    public async Task Query_RejectedReplacementPreservesPreviouslyValidLocalFile()
+    {
+        using var environment = new Storage.StorageTestEnvironment();
+        var storage = new LocalDocumentStorage(environment);
+        var xml = Validation.DocumentValidatorTests.Fixture();
+        var key = Validation.DocumentValidatorTests.AccessKey(xml);
+        var validator = Validation.DocumentValidatorTests.Validator();
+        await using var original = new DocumentContent(new MemoryStream(Encoding.UTF8.GetBytes(xml)), DownloadFormat.Xml);
+        Assert.Equal(DocumentValidationStatus.Valid, (await validator.ValidateAsync(original, DocumentType.Invoice, key)).Status);
+        var saved = await storage.SaveAsync(new("acme", "1790012345001", 2026, 6, DocumentDirection.Received, DocumentType.Invoice, key), original);
+        var row = new ReceivedDocumentRowSnapshot(0, OperationResult<ReceivedDocumentReference>.Success(
+            new(new ReceivedDocumentMetadata { AuthorizationNumber = key }, "xml", "pdf", "detail")), "key:" + key);
+        var scenario = new Scenario { StorageOverride = storage, ValidatorOverride = validator,
+            Pages = [new(1, false, 1, [row])] };
+        var response = await scenario.Service.QueryAsync(Query());
+        Assert.Equal(DocumentDownloadStatus.Failed, response.Documents[0].DownloadStatus);
+        Assert.Equal(DocumentStorageStatus.NotAttempted, response.Documents[0].StorageStatus);
+        Assert.Equal(Encoding.UTF8.GetBytes(xml), await File.ReadAllBytesAsync(saved.LocalPath!));
+        Assert.True(scenario.Session.Disposed);
     }
 
     private static ReceivedDocumentsPageSnapshot Snapshot(int number, bool? next, int? total, params int[] keys) =>
@@ -387,7 +436,7 @@ public class ReceivedDocumentsServiceTests
     };
 
     private sealed class Scenario : IReceivedDocumentsSessionFactory, IReceivedDocumentsPage,
-        IDocumentDownloader, IDocumentParser, IDocumentStorage
+        IDocumentDownloader, IDocumentParser, IDocumentStorage, IDocumentValidator
     {
         public IReadOnlyList<ReceivedDocumentsPageSnapshot>? Pages { get; init; }
         public int MaxPages { get; init; } = 1000;
@@ -402,15 +451,19 @@ public class ReceivedDocumentsServiceTests
         public int? FailedSaveRow { get; init; }
         public bool InvalidAccessKey { get; init; }
         public StorageProvider Provider { get; init; } = StorageProvider.Local;
+        public bool InvalidContent { get; init; }
+        public bool MetadataIssue { get; init; }
         public bool ThrowOnParse { get; init; }
         public bool ThrowOnOpen { get; init; }
+        public IDocumentStorage? StorageOverride { get; init; }
+        public IDocumentValidator? ValidatorOverride { get; init; }
         public int DownloadCount { get; private set; }
         public int SaveCount { get; private set; }
         public DocumentStorageContext? LastStorageContext { get; private set; }
         public List<DocumentContent> Contents { get; } = [];
         public FakeSession Session { get; private set; } = null!;
-        public ReceivedDocumentsService Service => new(this, this, this, this, this,
-            NullLogger<ReceivedDocumentsService>.Instance, Options.Create(new ReceivedDocumentsPaginationOptions { MaxPages = MaxPages }));
+        public ReceivedDocumentsService Service => new(this, this, this, this, StorageOverride ?? this,
+            NullLogger<ReceivedDocumentsService>.Instance, Options.Create(new ReceivedDocumentsPaginationOptions { MaxPages = MaxPages }), ValidatorOverride ?? this);
         public IReceivedDocumentsSession Create() => Session = new FakeSession(FailureStage == "login");
 
         public Task<bool> OpenAsync(IReceivedDocumentsSession session) =>
@@ -423,7 +476,7 @@ public class ReceivedDocumentsServiceTests
                         FailedReadRow == index
                             ? OperationResult<ReceivedDocumentReference>.Failure(ExtractionErrorCode.RowReadFailed, "Row failed.")
                             : OperationResult<ReceivedDocumentReference>.Success(new(
-                                new ReceivedDocumentMetadata { AuthorizationNumber = InvalidAccessKey ? "invalid" : index.ToString().PadLeft(49, '0') },
+                                new ReceivedDocumentMetadata { AuthorizationNumber = InvalidAccessKey ? "invalid" : index.ToString().PadLeft(49, '0'), MetadataParseStatus = MetadataIssue ? MetadataParseStatus.Partial : MetadataParseStatus.NotChecked, Errors = MetadataIssue ? [new(ExtractionErrorCode.InvalidMetadata, "Invalid amount.", Field: "amount")] : [] },
                                 "xml", "pdf", "detail")), index.ToString())).ToArray(), RowCount == 0)));
 
         public Task<OperationResult<ReceivedDocumentsPageSnapshot>> MoveNextAsync(IReceivedDocumentsSession session, ReceivedDocumentsPageSnapshot current)
@@ -436,7 +489,7 @@ public class ReceivedDocumentsServiceTests
         }
 
         public Task<OperationResult<DocumentContent>> DownloadAsync(
-            IReceivedDocumentsSession session, ReceivedDocumentReference document, DownloadFormat format)
+            IReceivedDocumentsSession session, ReceivedDocumentReference document, DownloadFormat format, CancellationToken token = default)
         {
             var rowIndex = DownloadCount++;
             if (FailedDownloadRow == rowIndex)
@@ -448,6 +501,12 @@ public class ReceivedDocumentsServiceTests
             Contents.Add(content);
             return Task.FromResult(OperationResult<DocumentContent>.Success(content));
         }
+
+        public string Version => "1";
+        public Task<DocumentValidationResult> ValidateAsync(DocumentContent content, DocumentType type, string key, CancellationToken token = default) =>
+            Task.FromResult(new DocumentValidationResult { Status = InvalidContent || InvalidAccessKey ? DocumentValidationStatus.Invalid : DocumentValidationStatus.Valid,
+                ValidatorVersion = Version, Sha256 = "fixture-hash", SizeBytes = content.Stream.Length,
+                Errors = InvalidContent || InvalidAccessKey ? [new(ExtractionErrorCode.InvalidDocument, "Invalid content.")] : [] });
 
         public OperationResult<string> ExtractXml(string response) => new DocumentParser().ExtractXml(response);
         public Task<DocumentParseResult> ParseAsync(DocumentContent content, DocumentType documentType) =>

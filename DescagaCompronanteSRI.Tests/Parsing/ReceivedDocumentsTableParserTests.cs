@@ -18,6 +18,11 @@ public class ReceivedDocumentsTableParserTests
         Assert.Equal(100.50m, document.Metadata.Amount);
         Assert.Equal(15.08m, document.Metadata.Taxes);
         Assert.Equal(115.58m, document.Metadata.Total);
+        Assert.Equal("01/06/2026", document.Metadata.IssuedAt);
+        Assert.Equal("01/06/2026 10:30:00", document.Metadata.AuthorizedAt);
+        Assert.Equal(new DateOnly(2026, 6, 1), document.Metadata.IssuedDate);
+        Assert.Equal(new DateTimeOffset(2026, 6, 1, 10, 30, 0, TimeSpan.FromHours(-5)), document.Metadata.AuthorizedAtIso);
+        Assert.Equal(DescagaCompronanteSRI.Models.Enums.MetadataParseStatus.Parsed, document.Metadata.MetadataParseStatus);
         Assert.Equal("frmPrincipal:tablaCompRecibidos:0:lnkXml", document.XmlLinkId);
         Assert.Equal("frmPrincipal:tablaCompRecibidos:0:lnkPdf", document.PdfLinkId);
         Assert.Equal("frmPrincipal:tablaCompRecibidos:0:j_idt48", document.DetailId);

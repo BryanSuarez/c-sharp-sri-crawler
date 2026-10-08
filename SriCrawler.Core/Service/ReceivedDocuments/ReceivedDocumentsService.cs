@@ -1,5 +1,4 @@
 using DescagaCompronanteSRI.Jobs;
-using System.Security.Cryptography;
 using Microsoft.Extensions.Options;
 using DescagaCompronanteSRI.Contracts;
 using DescagaCompronanteSRI.Models.Dtos;
@@ -13,7 +12,7 @@ namespace DescagaCompronanteSRI.Services.ReceivedDocuments;
 public sealed class ReceivedDocumentsService(
     IReceivedDocumentsSessionFactory sessionFactory, IReceivedDocumentsPage page,
     IDocumentDownloader downloader, IDocumentParser parser, IDocumentStorage storage,
-    ILogger<ReceivedDocumentsService> logger, IOptions<ReceivedDocumentsPaginationOptions> options) : IReceivedDocumentsService, IReceivedExtractionRunner
+    ILogger<ReceivedDocumentsService> logger, IOptions<ReceivedDocumentsPaginationOptions> options, IDocumentValidator validator) : IReceivedDocumentsService, IReceivedExtractionRunner
 {
     public Task<ReceivedDocumentsResponse> QueryAsync(ReceivedDocumentsQuery query) => ExecuteAsync(query, null, CancellationToken.None);
     public Task<ReceivedDocumentsResponse> RunAsync(ReceivedDocumentsQuery query, IExtractionProgress progress, CancellationToken token) => ExecuteAsync(query, progress, token);
@@ -133,6 +132,10 @@ public sealed class ReceivedDocumentsService(
                 if (result.AccumulateDocuments) result.Documents.Add(document);
                 result.ProcessedCount++;
                 if (document.DownloadStatus == DocumentDownloadStatus.Downloaded) result.SavedCount++;
+                if (document.Validation.Status is DocumentValidationStatus.Invalid or DocumentValidationStatus.Unsupported or DocumentValidationStatus.Failed)
+                    result.ValidationIssues++;
+                if (document.MetadataParseStatus is MetadataParseStatus.Partial or MetadataParseStatus.Failed)
+                    result.MetadataIssues++;
                 document.SourceXml = null;
                 if (progress is not null) await progress.CheckpointAsync(result, token);
                 logger.LogInformation("Received page {Page}, row {Row}: {Status}, parse {ParseStatus}; {Count} results accumulated.",
@@ -197,15 +200,45 @@ public sealed class ReceivedDocumentsService(
                 return result;
             }
             result.Metadata = row.Value!.Metadata;
+            result.Errors.AddRange(result.Metadata.Errors.Select(error => error with { RowIndex = rowIndex, PageNumber = pageNumber }));
             stage = ExtractionErrorCode.DownloadFailed;
-            var download = await downloader.DownloadAsync(session, row.Value, query.DownloadFormat).WaitAsync(token);
+            var download = await downloader.DownloadAsync(session, row.Value, query.DownloadFormat, token);
             if (!download.IsSuccess)
             {
-                result.Errors.Add(download.Error! with { RowIndex = rowIndex, PageNumber = pageNumber });
+                var error = download.Error! with { RowIndex = rowIndex, PageNumber = pageNumber };
+                result.Errors.Add(error);
+                if (error.Code is ExtractionErrorCode.InvalidDocument or ExtractionErrorCode.InputTooLarge)
+                    result.Validation = new() { Status = DocumentValidationStatus.Invalid, ValidatorVersion = validator.Version,
+                        ValidatedAt = DateTimeOffset.UtcNow, Errors = [error] };
                 return result;
             }
 
             await using var content = download.Value!;
+            stage = ExtractionErrorCode.ValidationFailed;
+            result.Validation = await validator.ValidateAsync(content, query.DocumentType, result.Metadata.AuthorizationNumber, token);
+            result.Errors.AddRange(result.Validation.Errors.Select(error => error with { RowIndex = rowIndex, PageNumber = pageNumber }));
+            if (result.Validation.Status != DocumentValidationStatus.Valid) return result;
+            result.SourceXml = content.SourceXml;
+            if (content.Format == DownloadFormat.Xml)
+            {
+                result.XmlHash = result.Validation.Sha256;
+                content.Stream.Position = 0;
+                if (result.SourceXml is null)
+                {
+                    using var xmlReader = new StreamReader(content.Stream, leaveOpen: true);
+                    result.SourceXml = await xmlReader.ReadToEndAsync(token);
+                    content.Stream.Position = 0;
+                }
+            }
+            stage = ExtractionErrorCode.StorageFailed;
+            result.StorageStatus = DocumentStorageStatus.Failed;
+            result.Storage = await storage.SaveAsync(new DocumentStorageContext(
+                query.CompanyId, query.User, query.Year, query.Month, DocumentDirection.Received, query.DocumentType,
+                result.Metadata.AuthorizationNumber), content, token);
+            result.StorageStatus = DocumentStorageStatus.Stored;
+            result.FilePath = result.Storage.LocalPath;
+            result.DownloadStatus = DocumentDownloadStatus.Downloaded;
+            content.Stream.Position = 0;
             stage = ExtractionErrorCode.ParsingFailed;
             DocumentParseResult parsed;
             try
@@ -221,31 +254,16 @@ public sealed class ReceivedDocumentsService(
             result.ParseStatus = parsed.Status;
             result.ParsedDocument = parsed.Document;
             if (parsed.Error is not null) result.Errors.Add(parsed.Error with { RowIndex = rowIndex, PageNumber = pageNumber });
-
-            result.SourceXml = content.SourceXml;
-            if (content.Format == DownloadFormat.Xml)
-            {
-                result.XmlHash = Convert.ToHexString(await SHA256.HashDataAsync(content.Stream, token));
-                content.Stream.Position = 0;
-                if (result.SourceXml is null)
-                {
-                    using var xmlReader = new StreamReader(content.Stream, leaveOpen: true);
-                    result.SourceXml = await xmlReader.ReadToEndAsync(token);
-                    content.Stream.Position = 0;
-                }
-            }
-            stage = ExtractionErrorCode.StorageFailed;
-            result.Storage = await storage.SaveAsync(new DocumentStorageContext(
-                query.CompanyId, query.User, query.Year, query.Month, DocumentDirection.Received, query.DocumentType,
-                result.Metadata.AuthorizationNumber), content, token);
-            result.FilePath = result.Storage.LocalPath;
-            result.DownloadStatus = DocumentDownloadStatus.Downloaded;
         }
         catch (Exception) when (token.IsCancellationRequested) { throw new OperationCanceledException(token); }
         catch (Exception exception)
         {
             logger.LogWarning(exception, "Document processing failed at row {RowIndex} during {Stage}.", rowIndex, stage);
-            result.Errors.Add(new(stage, "Document processing failed.", rowIndex, pageNumber));
+            var error = new ExtractionError(stage, "Document processing failed.", rowIndex, pageNumber);
+            result.Errors.Add(error);
+            if (stage == ExtractionErrorCode.ValidationFailed)
+                result.Validation = new() { Status = DocumentValidationStatus.Failed, ValidatorVersion = validator.Version,
+                    ValidatedAt = DateTimeOffset.UtcNow, Errors = [error] };
         }
         return result;
     }
