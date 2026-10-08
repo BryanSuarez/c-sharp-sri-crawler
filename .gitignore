@@ -379,3 +379,8 @@ improvements.md
 
 # Private document storage configuration
 .env.storage
+
+# Private job infrastructure configuration
+.env.jobs
+**/.env.jobs
+**/dist/

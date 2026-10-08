@@ -1,3 +1,5 @@
+using DescagaCompronanteSRI.Models.Responses;
+using DescagaCompronanteSRI.Jobs;
 using System.Text;
 using Microsoft.Extensions.Options;
 using DescagaCompronanteSRI.Contracts;
@@ -331,6 +333,51 @@ public class ReceivedDocumentsServiceTests
         Assert.Equal(ExtractionStatus.Partial, result.Status);
         Assert.Equal(2, result.Documents[1].Errors[0].PageNumber);
         Assert.Equal(0, result.Documents[1].Errors[0].RowIndex);
+    }
+
+
+    [Fact]
+    public async Task Run_PersistsThousandsIncrementallyWithoutAccumulatingDocuments()
+    {
+        var scenario = new Scenario { RowCount = 2000 };
+        var progress = new StreamingProgress();
+        var result = await scenario.Service.RunAsync(Query(), progress, default);
+        Assert.Empty(result.Documents);
+        Assert.Equal(2000, progress.Count);
+        Assert.Equal(2000, result.DownloadedCount);
+        Assert.Equal(result.DiscoveredCount, result.DownloadedCount + result.FailedCount);
+        Assert.True(scenario.Session.Disposed);
+        Assert.All(scenario.Contents, c => Assert.False(c.Stream.CanRead));
+    }
+    [Fact]
+    public async Task Run_PersistenceFailureStopsTraversalAndDisposesSession()
+    {
+        var scenario = new Scenario { RowCount = 3 };
+        var progress = new StreamingProgress { Fail = true };
+        await Assert.ThrowsAsync<IOException>(() => scenario.Service.RunAsync(Query(), progress, default));
+        Assert.True(progress.QueryConfirmedBeforeSave);
+        Assert.Equal(1, scenario.DownloadCount);
+        Assert.True(scenario.Session.Disposed);
+    }
+    private sealed class StreamingProgress : IExtractionProgress
+    {
+        public bool Fail { get; init; }
+        public int Count { get; private set; }
+        private bool queryConfirmed;
+        public bool QueryConfirmedBeforeSave { get; private set; }
+        public Task StageAsync(ExtractionStage stage, CancellationToken token) => Task.CompletedTask;
+        public Task<ReceivedDocumentResponse?> FindSavedAsync(string key, int page, int row, CancellationToken token) => Task.FromResult<ReceivedDocumentResponse?>(null);
+        public Task SaveAsync(ReceivedDocumentResponse document, CancellationToken token)
+        {
+            QueryConfirmedBeforeSave = queryConfirmed;
+            if (Fail) throw new IOException("Persistence unavailable");
+            Count++; return Task.CompletedTask;
+        }
+        public Task CheckpointAsync(ReceivedDocumentsResponse response, CancellationToken token)
+        {
+            queryConfirmed = response.QuerySucceeded;
+            return Task.CompletedTask;
+        }
     }
 
     internal static ReceivedDocumentsQuery Query(DownloadFormat format = DownloadFormat.Xml) => new()

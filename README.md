@@ -2,7 +2,9 @@
 
 API REST en **ASP.NET Core 8** que automatiza consultas en el portal del SRI Ecuador con **Playwright + Chrome** para descargar comprobantes electrónicos **recibidos** y **emitidos**.
 
-> Estado actual: recibidos soporta descarga **XML o PDF**; emitidos soporta descarga **PDF**.
+> Estado actual: recibidos se ejecuta **asíncronamente por defecto** con Hangfire/PostgreSQL, worker .NET y parser Node.js. Soporta **XML o PDF**, con espera síncrona opcional. Emitidos conserva su contrato **PDF**.
+
+Consulta [ASYNC_RECEIVED_DOCUMENTS.md](ASYNC_RECEIVED_DOCUMENTS.md) para configuración, migraciones, API/worker/parser, progreso y recuperación. PostgreSQL y el worker son necesarios también al solicitar `executionMode: "sync"`.
 
 ## ⚠️ Importante: no subir `wwwroot` a GitHub
 
@@ -32,7 +34,7 @@ git commit -m "chore: quitar wwwroot del control de versiones"
 | Emitidos | `POST /api/SriEmitidos/consultar` | Consulta comprobantes emitidos autorizados y descarga PDFs. |
 | Descargar PDF emitido guardado | `GET /api/SriEmitidos/descargar/{ruc}/{claveAcceso}` | Devuelve un PDF emitido previamente descargado. |
 
-La aplicación recibe credenciales del SRI y filtros de consulta, abre una sesión automatizada de navegador, llena los formularios JSF del portal, lee la tabla de resultados, descarga los archivos y responde con metadatos de los comprobantes.
+Para recibidos, la API persiste la solicitud y responde `202` con un identificador. El worker abre la sesión SRI, recorre páginas y guarda archivos y resultados incrementalmente. Laravel puede consultar progreso y resultados paginados; el detalle incluye JSON de la librería. Los ejemplos de respuesta final siguientes corresponden al modo `sync` o al resultado de la extracción.
 
 ## Funcionalidades
 
@@ -65,29 +67,16 @@ La aplicación recibe credenciales del SRI y filtros de consulta, abre una sesi�
 
 ```text
 .
-├── DescagaCompronanteSRI.slnx
-├── DescagaCompronanteSRI/
-│   ├── Program.cs
-│   ├── Controllers/
-│   │   ├── ReceivedDocumentsController.cs
-│   │   └── SriEmitidosController.cs
-│   ├── Helpers/
-│   │   └── PlaywrightSession.cs
-│   ├── Models/
-│   │   ├── Documents/ (modelos XML en inglés)
-│   │   ├── Enums/
-│   │   └── Extraction/
-│   ├── Service/
-│   │   ├── ReceivedDocuments/ (page object, coordinator, strategies, parser)
-│   │   ├── Storage/ (local storage, S3/R2 adapter, keys and configuration)
-│   │   └── ConsultaComprobantesEmitidosService.cs
-│   ├── appsettings.json
-│   └── DescagaCompronanteSRI.csproj
+├── DescagaCompronanteSRI/       # API, controllers and Swagger
+├── SriCrawler.Core/            # Shared contracts, crawler, storage, jobs and persistence
+├── SriCrawler.Worker/          # Hangfire server and recoverable dispatcher
+├── sri-document-parser/        # Private Fastify service and real-library fixtures
+├── DescagaCompronanteSRI.Tests/
 ├── TwoCaptcha/
-├── Dockerfile
+├── .env.jobs.example
+├── .env.storage.example
 ├── docker-compose.yml
-├── entrypoint.sh
-└── README.md
+└── ASYNC_RECEIVED_DOCUMENTS.md
 ```
 
 > Nota: el proyecto `TwoCaptcha` existe como referencia local, pero el flujo principal actual no depende de él directamente.
@@ -329,7 +318,7 @@ La respuesta incluye los resultados de todas las páginas procesadas, incluso fi
 
 Los errores de paginación son `paginationNavigationFailed`, `repeatedPage`, `duplicateDocument`, `paginationStateUnknown`, `paginationInconsistent` y `paginationLimitReached`.
 
-Una consulta ejecutada devuelve HTTP `200`, incluso si falla una transición posterior o todos sus documentos fallaron; el resultado lo indica `status`. Errores previos a la ejecución de la consulta devuelven `500` con resultado tipado. Solicitudes inválidas devuelven `400`.
+En modo `sync`, si termina antes de la espera máxima, una consulta ejecutada devuelve HTTP `200`, incluso si falla una transición posterior o todos sus documentos fallaron; el resultado lo indica `status`. Errores previos a la ejecución de la consulta devuelven `500` con resultado tipado. Solicitudes inválidas devuelven `400`.
 
 ### Configuración y verificación de paginación
 
@@ -484,13 +473,13 @@ Docker es útil porque empaqueta .NET, Chrome, dependencias de sistema, Xvfb y O
 ### Construir y levantar
 
 ```bash
-docker compose up --build -d
+docker compose --env-file .env.jobs up --build -d
 ```
 
 ### Ver logs
 
 ```bash
-docker compose logs -f sri-descarga
+docker compose --env-file .env.jobs logs -f sri-descarga
 ```
 
 La API queda disponible en:
@@ -590,7 +579,7 @@ shm_size: '1gb'
 También revisa logs:
 
 ```bash
-docker compose logs -f sri-descarga
+docker compose --env-file .env.jobs logs -f sri-descarga
 ```
 
 ### No se encuentran comprobantes

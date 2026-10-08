@@ -1,3 +1,5 @@
+using DescagaCompronanteSRI.Jobs;
+using Microsoft.Extensions.Options;
 using System.Net;
 using System.Net.Http.Json;
 using System.Text;
@@ -16,6 +18,7 @@ using Microsoft.Extensions.DependencyInjection.Extensions;
 
 namespace DescagaCompronanteSRI.Tests.ReceivedDocuments;
 
+[Collection("HangfireHost")]
 public sealed class ReceivedDocumentsApiTests : IClassFixture<ReceivedDocumentsApiTests.ApiFactory>
 {
     private readonly ApiFactory _factory;
@@ -27,7 +30,7 @@ public sealed class ReceivedDocumentsApiTests : IClassFixture<ReceivedDocumentsA
     }
 
     private const string ValidJson = """
-        {"companyId":"acme","user":"1790012345001","password":"test-only","year":2026,"month":6,"day":0,"documentType":"invoice","downloadFormat":"xml"}
+        {"executionMode":"sync","companyId":"acme","user":"1790012345001","password":"test-only","year":2026,"month":6,"day":0,"documentType":"invoice","downloadFormat":"xml"}
         """;
 
     [Fact]
@@ -234,6 +237,48 @@ public sealed class ReceivedDocumentsApiTests : IClassFixture<ReceivedDocumentsA
         Assert.True(schemas.GetProperty("ExtractionError").GetProperty("properties").TryGetProperty("pageNumber", out _));
     }
 
+
+    [Fact]
+    public async Task Query_DefaultsToAsyncAndDoesNotExecuteSri()
+    {
+        var previous = _factory.Received.Calls;
+        var response = await Post(ValidJson.Replace("\"executionMode\":\"sync\",", ""));
+        Assert.Equal(HttpStatusCode.Accepted, response.StatusCode);
+        var body = JsonDocument.Parse(await response.Content.ReadAsStringAsync()).RootElement;
+        Assert.Equal("queued", body.GetProperty("jobStatus").GetString());
+        Assert.True(body.TryGetProperty("extractionId", out _));
+        Assert.Equal(previous, _factory.Received.Calls);
+    }
+    [Fact]
+    public async Task Query_SynchronousTimeoutFallsBackToAcceptedWithoutExecutingInApi()
+    {
+        _factory.Received.DelayResult = true;
+        try { Assert.Equal(HttpStatusCode.Accepted, (await Post(ValidJson)).StatusCode); }
+        finally { _factory.Received.DelayResult = false; }
+    }
+    [Theory]
+    [InlineData("null")]
+    [InlineData("1")]
+    [InlineData("\"unknown\"")]
+    public async Task Query_RejectsInvalidExecutionMode(string value) =>
+        await AssertRejected(ValidJson.Replace("\"sync\"", value));
+
+    public sealed class StubJobs(StubReceivedService service) : IExtractionJobs
+    {
+        private readonly Dictionary<Guid, ReceivedDocumentsQuery> queries = [];
+        public Task<ExtractionAccepted> AcceptAsync(ReceivedDocumentsQuery query, Guid? requestId, CancellationToken token)
+        {
+            var id = Guid.NewGuid(); queries[id] = query;
+            return Task.FromResult(new ExtractionAccepted(id, query.CompanyId, query.User, JobStatus.Queued, "/status", "/documents", "/errors"));
+        }
+        public async Task<ReceivedDocumentsResponse?> ResultAsync(Guid id, string company, CancellationToken token) =>
+            service.DelayResult ? null : await service.QueryAsync(queries[id]);
+        public Task<ExtractionSummary?> GetAsync(Guid id, string company, CancellationToken token) => Task.FromResult<ExtractionSummary?>(null);
+        public Task<CursorPage<JsonElement>?> DocumentsAsync(Guid id, string company, long cursor, int limit, CancellationToken token) => Task.FromResult<CursorPage<JsonElement>?>(null);
+        public Task<JsonElement?> DocumentAsync(Guid id, string company, long doc, CancellationToken token) => Task.FromResult<JsonElement?>(null);
+        public Task<CursorPage<JsonElement>?> ErrorsAsync(Guid id, string company, long cursor, int limit, CancellationToken token) => Task.FromResult<CursorPage<JsonElement>?>(null);
+    }
+
     private Task<HttpResponseMessage> Post(string json) =>
         _client.PostAsync("/api/received-documents/query", new StringContent(json, Encoding.UTF8, "application/json"));
 
@@ -252,12 +297,14 @@ public sealed class ReceivedDocumentsApiTests : IClassFixture<ReceivedDocumentsA
         {
             builder.UseEnvironment("Testing");
             builder.ConfigureAppConfiguration((_, config) => config.AddInMemoryCollection(new Dictionary<string, string?>
-            { ["DOCUMENT_STORAGE_PROVIDER"] = "Local" }));
+            { ["DOCUMENT_STORAGE_PROVIDER"] = "Local", ["ExtractionJobs:ConnectionString"] = "Host=localhost;Database=test", ["ExtractionJobs:EncryptionKey"] = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=", ["ExtractionJobs:SyncWaitSeconds"] = "1" }));
             builder.UseContentRoot(Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "../../../../DescagaCompronanteSRI")));
             builder.ConfigureServices(services =>
             {
                 services.RemoveAll<IReceivedDocumentsService>();
                 services.AddSingleton<IReceivedDocumentsService>(Received);
+                services.RemoveAll<IExtractionJobs>();
+                services.AddSingleton<IExtractionJobs>(new StubJobs(Received));
                 services.RemoveAll<IIssuedDocumentsService>();
                 services.AddSingleton<IIssuedDocumentsService, StubIssuedService>();
             });
@@ -268,6 +315,7 @@ public sealed class ReceivedDocumentsApiTests : IClassFixture<ReceivedDocumentsA
     {
         public bool QuerySucceeded { get; set; } = true;
         public bool Incomplete { get; set; }
+        public bool DelayResult { get; set; }
         public int Calls { get; private set; }
         public ReceivedDocumentsQuery? LastQuery { get; private set; }
         public Task<ReceivedDocumentsResponse> QueryAsync(ReceivedDocumentsQuery query)

@@ -17,3 +17,10 @@
 # Private storage configuration and downloaded documents
 **/.env.storage
 **/wwwroot/
+**/.env.jobs
+**/node_modules/
+**/dist/
+**/TestResults/
+**/vpn/
+**/*cookies*.json
+**/.env
