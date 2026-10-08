@@ -63,6 +63,6 @@
 #*.RTF   diff=astextplain
 
 # Preserve the exact bytes and provenance hashes of bundled official schemas.
-/SriCrawler.Core/Validation/Schemas/*.xsd -text whitespace=-blank-at-eol,cr-at-eol
+/SriCrawler.Core/Validation/Schemas/*.xsd -text whitespace=-blank-at-eol,-space-before-tab,cr-at-eol
 # Keep PDF fixture byte offsets intact on every checkout platform.
 /DescagaCompronanteSRI.Tests/Fixtures/Validation/*.pdf binary
