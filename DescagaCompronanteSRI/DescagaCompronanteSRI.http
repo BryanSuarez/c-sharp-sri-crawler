@@ -59,7 +59,7 @@ Content-Type: application/json
   "downloadPolicy": "refresh"
 }
 
-### Status and summary
+### Status and summary (includes confirmed timings and measurement coverage)
 # Inspect validationIssueCount and metadataIssueCount separately from failedCount.
 GET {{HostAddress}}/api/received-documents/extractions/{{ExtractionId}}?companyId={{CompanyId}}
 
@@ -110,3 +110,6 @@ Content-Type: application/json
 ### Descargar PDF emitido guardado
 GET {{HostAddress}}/api/SriEmitidos/descargar/{{SriUser}}/{{SriAccessKey}}
 accept: application/pdf
+
+### Attempt history and stage/operation timings (cursor is the last attempt number)
+GET {{HostAddress}}/api/received-documents/extractions/{{ExtractionId}}/attempts?companyId={{CompanyId}}&limit=100&cursor=0

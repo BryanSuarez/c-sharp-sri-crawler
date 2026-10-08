@@ -1,3 +1,4 @@
+using DescagaCompronanteSRI.Diagnostics;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -13,7 +14,7 @@ using Npgsql;
 namespace DescagaCompronanteSRI.Jobs;
 
 public sealed class ExtractionJobs(CrawlerDbContext db, CredentialCipher cipher,
-    IOptions<ExtractionJobOptions> options) : IExtractionJobs
+    IOptions<ExtractionJobOptions> options, ILogger<ExtractionJobs>? logger = null) : IExtractionJobs
 {
     public static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
     public static string Serialize<T>(T value) => JsonSerializer.Serialize(value, Json);
@@ -72,13 +73,22 @@ public sealed class ExtractionJobs(CrawlerDbContext db, CredentialCipher cipher,
                     x => x.CompanyId == query.CompanyId && x.ClientRequestId == requestId, token);
                 return Match(previous, fingerprint);
             }
-            return Accepted(extraction);
+            return LogAccepted(extraction, false);
         }
         catch (Exception e) when (e is NpgsqlException or DbUpdateException)
         { throw new PersistenceUnavailableException(); }
     }
-    private static ExtractionAccepted Match(ExtractionRecord record, string fingerprint) =>
-        record.Fingerprint == fingerprint ? Accepted(record) : throw new IdempotencyConflictException();
+    private ExtractionAccepted Match(ExtractionRecord record, string fingerprint) =>
+        record.Fingerprint == fingerprint ? LogAccepted(record, true) : throw new IdempotencyConflictException();
+    private ExtractionAccepted LogAccepted(ExtractionRecord record, bool existing)
+    {
+        if (logger is not null)
+        {
+            using var scope = ExtractionDiagnostics.SafeScope(logger, new Dictionary<string, object> { ["extractionId"] = record.Id, ["companyId"] = record.CompanyId });
+            ExtractionDiagnostics.Event(logger, LogLevel.Information, existing ? DiagnosticEvent.IdempotentMatch : DiagnosticEvent.Accepted, stage: record.Stage);
+        }
+        return Accepted(record);
+    }
     private static ExtractionAccepted Accepted(ExtractionRecord record)
     {
         var path = $"/api/received-documents/extractions/{record.Id}";
@@ -110,7 +120,17 @@ public sealed class ExtractionJobs(CrawlerDbContext db, CredentialCipher cipher,
         var saved = counts?.Saved ?? 0;
         return new(e.Id, e.CompanyId, e.TaxpayerId, e.JobStatus, e.ExtractionStatus, e.Stage, e.AttemptCount,
             e.CreatedAt, e.StartedAt, e.FinishedAt, e.LastActivityAt, count, saved, count - saved,
-            counts?.ConversionFailed ?? 0, counts?.Unsupported ?? 0, Deserialize<PaginationProgress>(e.PaginationJson), counts?.ValidationIssues ?? 0, counts?.MetadataIssues ?? 0, saved - (counts?.Reused ?? 0), counts?.Reused ?? 0);
+            counts?.ConversionFailed ?? 0, counts?.Unsupported ?? 0, Deserialize<PaginationProgress>(e.PaginationJson), counts?.ValidationIssues ?? 0, counts?.MetadataIssues ?? 0, saved - (counts?.Reused ?? 0), counts?.Reused ?? 0, await AttemptDiagnosticsStore.SummaryAsync(db, e, token));
+    }
+    public async Task<CursorPage<ExtractionAttemptSummary>?> AttemptsAsync(Guid id, string companyId, long cursor, int limit, CancellationToken token)
+    {
+        if (await Find(id, companyId, token) is null) return null;
+        var attempts = await db.Attempts.AsNoTracking().Where(x => x.ExtractionId == id && x.Number > cursor)
+            .OrderBy(x => x.Number).Take(limit + 1).ToListAsync(token);
+        var items = attempts.Take(limit).Select(x => new ExtractionAttemptSummary(x.Id, x.Number, x.StartedAt,
+            x.FinishedAt, x.ErrorCode, x.DiagnosticsJson is null ? null : Deserialize<AttemptDiagnosticsSnapshot>(x.DiagnosticsJson),
+            x.DiagnosticsJson is null ? DiagnosticsCoverage.NotAvailable : Deserialize<AttemptDiagnosticsSnapshot>(x.DiagnosticsJson).Coverage)).ToArray();
+        return new(items, attempts.Count > limit ? items[^1].Number.ToString(System.Globalization.CultureInfo.InvariantCulture) : null);
     }
     public async Task<CursorPage<JsonElement>?> DocumentsAsync(Guid id, string companyId, long cursor, int limit, CancellationToken token)
     {
@@ -161,6 +181,7 @@ public sealed class ExtractionJobs(CrawlerDbContext db, CredentialCipher cipher,
         if (e is null || e.JobStatus is not (JobStatus.Completed or JobStatus.Failed)) return null;
         var result = new ReceivedDocumentsResponse { ExtractionId = id, CompanyId = e.CompanyId,
             TaxpayerId = e.TaxpayerId, BusinessName = e.BusinessName, QuerySucceeded = e.QuerySucceeded,
+            Timings = await AttemptDiagnosticsStore.SummaryAsync(db, e, token),
             Status = e.ExtractionStatus ?? ExtractionStatus.Failed };
         var progress = Deserialize<PaginationProgress>(e.PaginationJson);
         result.Pagination.Status = progress.Status;

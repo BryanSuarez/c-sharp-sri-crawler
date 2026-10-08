@@ -1,3 +1,4 @@
+using DescagaCompronanteSRI.Diagnostics;
 using System.Text.Json;
 using DescagaCompronanteSRI.Contracts;
 using DescagaCompronanteSRI.Models.Dtos;
@@ -29,7 +30,9 @@ public sealed class DocumentReuseResolver(IDbContextFactory<CrawlerDbContext> fa
     public static string Profile(IDocumentValidator validator, DocumentValidationOptions options, DownloadFormat format) =>
         System.FormattableString.Invariant($"{validator.Version}:{format}:{(format == DownloadFormat.Xml ? options.MaxXmlBytes : options.MaxPdfBytes)}:{(format == DownloadFormat.Pdf ? options.MaxPdfPages : 0)}");
 
-    public async Task PreparePageAsync(ReceivedDocumentsQuery query, IReadOnlyList<string> keys, CancellationToken token)
+    public Task PreparePageAsync(ReceivedDocumentsQuery query, IReadOnlyList<string> keys, CancellationToken token) =>
+        ExtractionDiagnostics.MeasureAsync(DiagnosticOperation.CandidateLookup, () => PreparePageCoreAsync(query, keys, token));
+    private async Task PreparePageCoreAsync(ReceivedDocumentsQuery query, IReadOnlyList<string> keys, CancellationToken token)
     {
         candidates.Clear(); preparedKeys.Clear();
         foreach (var key in keys) preparedKeys.Add(key);
@@ -48,7 +51,11 @@ public sealed class DocumentReuseResolver(IDbContextFactory<CrawlerDbContext> fa
         }
     }
 
-    public async Task<ReceivedDocumentResponse?> ResolveAsync(ReceivedDocumentsQuery query, ReceivedDocumentMetadata metadata,
+    public Task<ReceivedDocumentResponse?> ResolveAsync(ReceivedDocumentsQuery query, ReceivedDocumentMetadata metadata,
+        int page, int row, ExtractionDocument? previous, CancellationToken token) =>
+        ExtractionDiagnostics.MeasureAsync(DiagnosticOperation.ReuseLookup, () => ResolveCoreAsync(query, metadata, page, row, previous, token),
+            value => value is { DownloadStatus: DocumentDownloadStatus.Failed } ? DiagnosticOutcome.Failed : DiagnosticOutcome.Succeeded);
+    private async Task<ReceivedDocumentResponse?> ResolveCoreAsync(ReceivedDocumentsQuery query, ReceivedDocumentMetadata metadata,
         int page, int row, ExtractionDocument? previous, CancellationToken token)
     {
         if (previous is null && query.DownloadPolicy == DownloadPolicy.Refresh) return null;
@@ -61,7 +68,8 @@ public sealed class DocumentReuseResolver(IDbContextFactory<CrawlerDbContext> fa
             token.ThrowIfCancellationRequested();
             var reference = ExtractionJobs.Deserialize<DocumentStorageReference>(file.StorageJson) with { LocalPath = file.LocalPath };
             if (!storage.CanRead(reference)) continue;
-            var inspection = await storage.InspectAsync(reference, token);
+            var inspection = await ExtractionDiagnostics.MeasureAsync(DiagnosticOperation.StorageInspection, () => storage.InspectAsync(reference, token),
+                value => value.Status == StorageInspectionStatus.Failed ? DiagnosticOutcome.Failed : DiagnosticOutcome.Succeeded);
             if (inspection.Status == StorageInspectionStatus.Missing) continue;
             var response = new ReceivedDocumentResponse { PageNumber = page, RowIndex = row, Metadata = metadata,
                 DownloadFormat = query.DownloadFormat, AcquisitionSource = previous?.AcquisitionSource ?? DocumentAcquisitionSource.Reused };
@@ -79,15 +87,20 @@ public sealed class DocumentReuseResolver(IDbContextFactory<CrawlerDbContext> fa
                 async Task<bool> ReadAndValidateAsync()
                 {
                     if (content is not null) return true;
-                    await using var input = await storage.OpenReadAsync(reference, token);
                     var memory = new MemoryStream();
                     content = new DocumentContent(memory, query.DownloadFormat);
                     var limit = query.DownloadFormat == DownloadFormat.Xml ? options.Value.MaxXmlBytes : options.Value.MaxPdfBytes;
-                    await BoundedDocumentStream.CopyAsync(input, memory, limit, token);
+                    await ExtractionDiagnostics.MeasureAsync(DiagnosticOperation.StorageRead, async () =>
+                    {
+                        await using var input = await storage.OpenReadAsync(reference, token);
+                        await BoundedDocumentStream.CopyAsync(input, memory, limit, token);
+                    });
                     memory.Position = 0;
-                    validation = await validator.ValidateAsync(content, query.DocumentType, key, token);
+                    validation = await ExtractionDiagnostics.MeasureAsync(DiagnosticOperation.Validation, () => validator.ValidateAsync(content, query.DocumentType, key, token),
+                        value => value.Status == DocumentValidationStatus.Valid ? DiagnosticOutcome.Succeeded : value.Status == DocumentValidationStatus.Unsupported ? DiagnosticOutcome.Unsupported : DiagnosticOutcome.Failed);
                     if (validation.Status != DocumentValidationStatus.Valid) return false;
-                    var after = await storage.InspectAsync(reference, token);
+                    var after = await ExtractionDiagnostics.MeasureAsync(DiagnosticOperation.StorageInspection, () => storage.InspectAsync(reference, token),
+                value => value.Status == StorageInspectionStatus.Failed ? DiagnosticOutcome.Failed : DiagnosticOutcome.Succeeded);
                     if (after.Status != StorageInspectionStatus.Exists || after.Revision != inspection.Revision || after.SizeBytes != inspection.SizeBytes)
                         throw new IOException("The stored document changed during verification.");
                     return true;
@@ -128,7 +141,8 @@ public sealed class DocumentReuseResolver(IDbContextFactory<CrawlerDbContext> fa
                     else
                     {
                         DocumentParseResult interpretation;
-                        try { interpretation = await documentParser.ParseAsync(content!, query.DocumentType).WaitAsync(token); }
+                        try { interpretation = await ExtractionDiagnostics.MeasureAsync(DiagnosticOperation.LegacyParsing, () => documentParser.ParseAsync(content!, query.DocumentType).WaitAsync(token),
+                            value => value.Status == DocumentParseStatus.Failed ? DiagnosticOutcome.Failed : value.Status == DocumentParseStatus.Unsupported ? DiagnosticOutcome.Unsupported : DiagnosticOutcome.Succeeded); }
                         catch (OperationCanceledException) when (token.IsCancellationRequested) { throw; }
                         catch (Exception) { interpretation = new(DocumentParseStatus.Failed, Error: new(ExtractionErrorCode.ParsingFailed, "Stored document content could not be interpreted.")); }
                         response.ParseStatus = interpretation.Status; response.ParsedDocument = interpretation.Document;

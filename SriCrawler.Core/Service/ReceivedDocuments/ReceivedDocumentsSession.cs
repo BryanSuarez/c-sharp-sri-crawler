@@ -1,3 +1,4 @@
+using DescagaCompronanteSRI.Diagnostics;
 using DescagaCompronanteSRI.Contracts;
 using DescagaCompronanteSRI.Helpers;
 using DescagaCompronanteSRI.Models.Dtos;
@@ -24,7 +25,9 @@ internal sealed class ReceivedDocumentsSession(
     public async Task<SriUserProfile?> LoginAsync(ReceivedDocumentsQuery query)
     {
         _session = await browserFactory.CreateAsync();
-        return await loginService.LoginAsync(Session, query.User, query.Password, query.AdditionalUser);
+        return await ExtractionDiagnostics.MeasureAsync(DiagnosticOperation.Authentication,
+            () => loginService.LoginAsync(Session, query.User, query.Password, query.AdditionalUser),
+            value => value is null ? DiagnosticOutcome.Failed : DiagnosticOutcome.Succeeded);
     }
 
     public Task<string> GetPortalBodyAsync() => portalService.GetPortalBodyAsync(
@@ -37,6 +40,6 @@ internal sealed class ReceivedDocumentsSession(
     public Task CloseModalAsync() => Session.CerrarModalAsync();
     public async ValueTask DisposeAsync()
     {
-        if (_session is not null) await _session.DisposeAsync();
+        if (_session is not null) await ExtractionDiagnostics.MeasureAsync(DiagnosticOperation.SessionCleanup, () => _session.DisposeAsync().AsTask());
     }
 }

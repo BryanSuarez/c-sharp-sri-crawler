@@ -1,3 +1,4 @@
+using DescagaCompronanteSRI.Diagnostics;
 using DescagaCompronanteSRI.Validation;
 using System.Text.Json;
 using DescagaCompronanteSRI.Contracts;
@@ -16,10 +17,13 @@ public sealed class PersistentExtractionProgress(IDbContextFactory<CrawlerDbCont
 {
     public async Task StageAsync(ExtractionStage stage, CancellationToken token)
     {
+        ExtractionDiagnostics.Current?.SetStage(stage);
         await using var db = await factory.CreateDbContextAsync(token);
         await db.Extractions.Where(x => x.Id == extractionId && x.ActiveAttemptId == attemptId)
             .ExecuteUpdateAsync(s => s.SetProperty(x => x.Stage, stage)
                 .SetProperty(x => x.LastActivityAt, DateTimeOffset.UtcNow), token);
+        if (ExtractionDiagnostics.Current is { } diagnostics)
+            await AttemptDiagnosticsStore.SaveAsync(db, extractionId, attemptId, diagnostics.Snapshot(), token);
     }
     private readonly IDocumentReuseResolver reuse = reuseResolver ?? new DocumentReuseResolver(factory, storage, validator, validationOptions,
         new DescagaCompronanteSRI.Services.ReceivedDocuments.DocumentParser());
@@ -75,6 +79,7 @@ public sealed class PersistentExtractionProgress(IDbContextFactory<CrawlerDbCont
             ? new JsonConversion(DocumentParseStatus.NotApplicable)
             : cached is not null ? new JsonConversion(DocumentParseStatus.Parsed, cachedJson!.RootElement.Clone(), cached.ParserName, cached.ParserVersion)
             : await parser.ParseAsync(result.SourceXml ?? "", query.DocumentType, key ?? "", token);
+        using var persistence = ExtractionDiagnostics.StartOperation(DiagnosticOperation.Persistence, token);
         await using var transaction = await db.Database.BeginTransactionAsync(token);
         var job = await db.Extractions.SingleAsync(x => x.Id == extractionId, token);
         if (job.ActiveAttemptId != attemptId || job.JobStatus != JobStatus.Running)
@@ -150,6 +155,7 @@ public sealed class PersistentExtractionProgress(IDbContextFactory<CrawlerDbCont
         job.LastActivityAt = DateTimeOffset.UtcNow;
         await db.SaveChangesAsync(token);
         await transaction.CommitAsync(token);
+        persistence.Complete();
     }
     private static void SetFileValidation(DocumentFile file, DocumentValidationResult validation)
     {
@@ -158,7 +164,9 @@ public sealed class PersistentExtractionProgress(IDbContextFactory<CrawlerDbCont
         file.Sha256 = validation.Sha256;
         file.SizeBytes = validation.SizeBytes;
     }
-    public async Task CheckpointAsync(ReceivedDocumentsResponse response, CancellationToken token)
+    public Task CheckpointAsync(ReceivedDocumentsResponse response, CancellationToken token) =>
+        ExtractionDiagnostics.MeasureAsync(DiagnosticOperation.Persistence, () => CheckpointCoreAsync(response, token));
+    private async Task CheckpointCoreAsync(ReceivedDocumentsResponse response, CancellationToken token)
     {
         await using var db = await factory.CreateDbContextAsync(token);
         var job = await db.Extractions.SingleAsync(x => x.Id == extractionId && x.ActiveAttemptId == attemptId, token);
@@ -170,6 +178,8 @@ public sealed class PersistentExtractionProgress(IDbContextFactory<CrawlerDbCont
             db.Failures.Add(new() { ExtractionId = extractionId, AttemptId = attemptId, CreatedAt = DateTimeOffset.UtcNow, ErrorJson = ExtractionJobs.Serialize(error) });
         response.Errors.Clear();
         await db.SaveChangesAsync(token);
+        if (ExtractionDiagnostics.Current is { } diagnostics)
+            await AttemptDiagnosticsStore.SaveAsync(db, extractionId, attemptId, diagnostics.Snapshot(), token);
     }
     public async Task<bool> HasUnseenDocumentsAsync(CancellationToken token)
     {

@@ -1,3 +1,4 @@
+using DescagaCompronanteSRI.Diagnostics;
 using System.Security.Cryptography;
 using System.Text;
 using DescagaCompronanteSRI.Contracts;
@@ -15,15 +16,16 @@ namespace DescagaCompronanteSRI.Jobs;
 
 public sealed class ExtractionWorker(IDbContextFactory<CrawlerDbContext> factory, IReceivedExtractionRunner runner,
     CredentialCipher cipher, ISriDocumentJsonParser parser, IDocumentStorage storage,
-    IBackgroundJobClient jobs, IOptions<ExtractionJobOptions> options, ILogger<ExtractionWorker> logger, IDocumentValidator validator, IOptions<DescagaCompronanteSRI.Validation.DocumentValidationOptions> validationOptions, IDocumentReuseResolver? reuseResolver = null)
+    IBackgroundJobClient jobs, IOptions<ExtractionJobOptions> options, ILogger<ExtractionWorker> logger, IDocumentValidator validator, IOptions<DescagaCompronanteSRI.Validation.DocumentValidationOptions> validationOptions, IDocumentReuseResolver? reuseResolver = null, TimeProvider? clock = null)
 {
     [AutomaticRetry(Attempts = 0)]
     public async Task ExecuteAsync(Guid extractionId, CancellationToken cancellationToken)
     {
-        using var logScope = logger.BeginScope(new Dictionary<string, object> { ["ExtractionId"] = extractionId });
+        using var logScope = ExtractionDiagnostics.SafeScope(logger, new Dictionary<string, object> { ["extractionId"] = extractionId });
         await using var db = await factory.CreateDbContextAsync(cancellationToken);
         var record = await db.Extractions.SingleOrDefaultAsync(x => x.Id == extractionId, cancellationToken);
         if (record is null || record.JobStatus is JobStatus.Completed or JobStatus.Failed) return;
+        using var companyScope = ExtractionDiagnostics.SafeScope(logger, new Dictionary<string, object> { ["companyId"] = record.CompanyId });
         var connectionOptions = new NpgsqlConnectionStringBuilder(options.Value.ConnectionString) { Pooling = false, KeepAlive = 10, CommandTimeout = 10 };
         await using var connection = new NpgsqlConnection(connectionOptions.ConnectionString);
         await connection.OpenAsync(cancellationToken);
@@ -33,6 +35,7 @@ public sealed class ExtractionWorker(IDbContextFactory<CrawlerDbContext> factory
             acquire.Parameters.AddWithValue("key", lockKey);
             if (!Equals(await acquire.ExecuteScalarAsync(cancellationToken), true))
             {
+                ExtractionDiagnostics.Event(logger, LogLevel.Information, DiagnosticEvent.TaxpayerBusy, code: "taxpayerBusy");
                 if (record.JobStatus != JobStatus.Running)
                     jobs.Schedule<ExtractionWorker>(x => x.ExecuteAsync(extractionId, CancellationToken.None), TimeSpan.FromSeconds(30));
                 return;
@@ -48,6 +51,11 @@ public sealed class ExtractionWorker(IDbContextFactory<CrawlerDbContext> factory
             return;
         }
         var query = ExtractionJobs.Deserialize<ReceivedDocumentsQuery>(record.QueryJson) with { Password = cipher.Decrypt(record.EncryptedPassword, record.Id), DownloadPolicy = record.DownloadPolicy };
+        using var queryScope = ExtractionDiagnostics.SafeScope(logger, new Dictionary<string, object> {
+            ["year"] = query.Year, ["month"] = query.Month,
+            ["documentType"] = ExtractionDiagnostics.Name(query.DocumentType), ["format"] = ExtractionDiagnostics.Name(query.DownloadFormat) });
+        var unfinished = await db.Attempts.Where(x => x.ExtractionId == extractionId && x.FinishedAt == null).ToListAsync(cancellationToken);
+        foreach (var previous in unfinished) AttemptDiagnosticsStore.MarkInterrupted(previous, DateTimeOffset.UtcNow);
         var attemptId = Guid.NewGuid();
         record.AttemptCount++;
         record.ActiveAttemptId = attemptId;
@@ -58,6 +66,10 @@ public sealed class ExtractionWorker(IDbContextFactory<CrawlerDbContext> factory
         record.PaginationJson = ExtractionJobs.Serialize(new PaginationProgress());
         db.Attempts.Add(new() { Id = attemptId, ExtractionId = extractionId, Number = record.AttemptCount, StartedAt = DateTimeOffset.UtcNow });
         await db.SaveChangesAsync(cancellationToken);
+        var diagnostics = new ExtractionDiagnostics(clock ?? TimeProvider.System, logger);
+        using var diagnosticsScope = diagnostics.Enter(extractionId, record.CompanyId, attemptId, record.AttemptCount);
+        await AttemptDiagnosticsStore.SaveAsync(db, extractionId, attemptId, diagnostics.Snapshot(), cancellationToken);
+        ExtractionDiagnostics.Event(logger, LogLevel.Information, DiagnosticEvent.AttemptStarted, stage: ExtractionStage.Login);
         using var execution = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         var deadline = DateTimeOffset.UtcNow.AddHours(options.Value.AttemptTimeoutHours);
         execution.CancelAfter(TimeSpan.FromHours(options.Value.AttemptTimeoutHours));
@@ -72,27 +84,39 @@ public sealed class ExtractionWorker(IDbContextFactory<CrawlerDbContext> factory
                 response.Errors.Add(new(ExtractionErrorCode.PaginationInconsistent, "Documents from an earlier attempt could not be verified."));
             }
             await progress.CheckpointAsync(response, execution.Token);
+            diagnostics.Finish(DiagnosticsCoverage.Complete, response.Status is ExtractionStatus.Completed or ExtractionStatus.NoDocuments ? DiagnosticOutcome.Succeeded : DiagnosticOutcome.Failed);
             await CompleteAsync(extractionId, attemptId, JobStatus.Completed, null, execution.Token);
+            ExtractionDiagnostics.Event(logger, LogLevel.Information, DiagnosticEvent.AttemptFinished, durationMs: diagnostics.Snapshot().ActiveDurationMs,
+                outcome: response.Status is ExtractionStatus.Completed or ExtractionStatus.NoDocuments ? DiagnosticOutcome.Succeeded : DiagnosticOutcome.Failed, detail: ExtractionDiagnostics.Name(response.Status));
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
+            diagnostics.Finish(DiagnosticsCoverage.Incomplete, DiagnosticOutcome.Cancelled);
+            ExtractionDiagnostics.Event(logger, LogLevel.Warning, DiagnosticEvent.AttemptInterrupted, code: "shutdown");
             // Hangfire requeues shutdown cancellations. Preserve credentials and stored documents.
             await SetRetryingBestEffortAsync(extractionId, attemptId, "shutdown");
             throw;
         }
         catch (Exception e)
         {
-            logger.LogWarning("Extraction {ExtractionId} attempt {Attempt} interrupted ({ErrorType}). Stack: {StackTrace}",
-                extractionId, record.AttemptCount, e.GetType().Name, e.StackTrace);
+            diagnostics.Finish(DiagnosticsCoverage.Incomplete, e is OperationCanceledException ? DiagnosticOutcome.Cancelled : DiagnosticOutcome.Failed);
+            ExtractionDiagnostics.Event(logger, LogLevel.Warning, DiagnosticEvent.AttemptInterrupted,
+                code: execution.IsCancellationRequested ? "executionInterrupted" : "executionFailed", errorType: e.GetType().Name);
             // Never turn an exhausted execution into a successful Hangfire/business result.
             if (transientFailures < 2 && record.ExpiresAt > DateTimeOffset.UtcNow && DateTimeOffset.UtcNow < deadline)
             {
+                ExtractionDiagnostics.Event(logger, LogLevel.Warning, DiagnosticEvent.RetryScheduled,
+                    code: "interrupted", detail: transientFailures == 0 ? 30 : 120);
                 await SetRetryingBestEffortAsync(extractionId, attemptId);
                 jobs.Schedule<ExtractionWorker>(x => x.ExecuteAsync(extractionId, CancellationToken.None),
                     TimeSpan.FromSeconds(transientFailures == 0 ? 30 : 120));
             }
-            else await CompleteAsync(extractionId, attemptId, JobStatus.Failed,
+            else
+            {
+                ExtractionDiagnostics.Event(logger, LogLevel.Error, DiagnosticEvent.AttemptFinished, code: "executionFailed");
+                await CompleteAsync(extractionId, attemptId, JobStatus.Failed,
                 execution.IsCancellationRequested ? "executionInterrupted" : "executionFailed", CancellationToken.None);
+            }
         }
         finally
         {
@@ -110,6 +134,8 @@ public sealed class ExtractionWorker(IDbContextFactory<CrawlerDbContext> factory
                 await using var probe = new NpgsqlCommand("SELECT 1", connection);
                 await probe.ExecuteScalarAsync(execution.Token);
                 await using var db = await factory.CreateDbContextAsync(execution.Token);
+                if (ExtractionDiagnostics.Current is { } diagnostics)
+                    await AttemptDiagnosticsStore.SaveAsync(db, id, attempt, diagnostics.Snapshot(), execution.Token);
                 var updated = await db.Extractions.Where(x => x.Id == id && x.ActiveAttemptId == attempt && x.JobStatus == JobStatus.Running && x.ExpiresAt > DateTimeOffset.UtcNow)
                     .ExecuteUpdateAsync(s => s.SetProperty(x => x.LastActivityAt, DateTimeOffset.UtcNow), execution.Token);
                 if (updated == 0) { execution.Cancel(); return; }
@@ -123,6 +149,8 @@ public sealed class ExtractionWorker(IDbContextFactory<CrawlerDbContext> factory
         try
         {
             await using var db = await factory.CreateDbContextAsync();
+            if (ExtractionDiagnostics.Current is { } diagnostics)
+                await AttemptDiagnosticsStore.SaveAsync(db, id, attempt, diagnostics.Snapshot(), CancellationToken.None);
             await db.Extractions.Where(x => x.Id == id && x.ActiveAttemptId == attempt && x.JobStatus == JobStatus.Running)
                 .ExecuteUpdateAsync(s => s.SetProperty(x => x.JobStatus, JobStatus.Retrying));
             await db.Attempts.Where(x => x.Id == attempt).ExecuteUpdateAsync(s => s.SetProperty(x => x.FinishedAt, DateTimeOffset.UtcNow).SetProperty(x => x.ErrorCode, code));
@@ -152,6 +180,8 @@ public sealed class ExtractionWorker(IDbContextFactory<CrawlerDbContext> factory
         await using var db = await factory.CreateDbContextAsync(token);
         var e = await db.Extractions.SingleAsync(x => x.Id == id, token);
         if (e.ActiveAttemptId != attempt || e.JobStatus == JobStatus.Failed) return;
+        if (ExtractionDiagnostics.Current is { } diagnostics)
+            await AttemptDiagnosticsStore.SaveAsync(db, id, attempt, diagnostics.Snapshot(), token);
         var rows = db.Results.Where(x => x.ExtractionId == id && (x.DocumentId != null || x.SeenAttemptId == attempt));
         var total = await rows.CountAsync(token);
         var saved = await rows.CountAsync(x => x.DownloadStatus == DocumentDownloadStatus.Downloaded, token);

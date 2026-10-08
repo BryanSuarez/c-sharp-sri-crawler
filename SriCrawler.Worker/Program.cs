@@ -1,3 +1,4 @@
+using DescagaCompronanteSRI.Diagnostics;
 using Microsoft.Extensions.Logging;
 using DescagaCompronanteSRI.Jobs;
 using DescagaCompronanteSRI.Services.Storage;
@@ -9,7 +10,7 @@ using Npgsql;
 var builder = Host.CreateApplicationBuilder(args);
 StorageConfiguration.AddStorageEnvironmentFile(builder.Configuration, builder.Environment);
 JobRegistration.AddJobEnvironmentFile(builder.Configuration, builder.Environment);
-builder.Logging.AddJsonConsole(o => o.IncludeScopes = true);
+builder.Logging.AddExtractionJsonConsole();
 builder.Services.AddReceivedCrawler();
 builder.Services.AddExtractionJobs(builder.Configuration, worker: true);
 builder.Services.Configure<HostOptions>(o => o.ShutdownTimeout = TimeSpan.FromSeconds(45));

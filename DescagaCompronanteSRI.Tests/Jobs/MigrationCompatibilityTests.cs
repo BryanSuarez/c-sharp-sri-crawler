@@ -38,7 +38,14 @@ public sealed class MigrationCompatibilityTests
                     "ValidationStatus", "StorageStatus", "MetadataParseStatus", "ValidationJson")
                 VALUES ({id}, {attempt}, 'legacy-key', 0, 3, {snapshot}::jsonb, 0, 0, 0, {empty}::jsonb)
                 """);
+            await db.Database.ExecuteSqlInterpolatedAsync($"""
+                INSERT INTO crawler.attempts ("Id", "ExtractionId", "Number", "StartedAt", "FinishedAt")
+                VALUES ({attempt}, {id}, 1, NOW(), NOW())
+                """);
             await db.Database.MigrateAsync();
+            var oldAttempt = await db.Attempts.SingleAsync(x => x.Id == attempt);
+            Assert.Null(oldAttempt.DiagnosticsJson); Assert.Null(oldAttempt.DiagnosticsVersion);
+            Assert.Equal(0, oldAttempt.DiagnosticsSequence); Assert.Null(oldAttempt.DiagnosticsUpdatedAt);
             var extraction = await db.Extractions.SingleAsync(); var result = await db.Results.SingleAsync();
             Assert.Equal(DownloadPolicy.Refresh, extraction.DownloadPolicy);
             Assert.Equal("original-fingerprint", extraction.Fingerprint);

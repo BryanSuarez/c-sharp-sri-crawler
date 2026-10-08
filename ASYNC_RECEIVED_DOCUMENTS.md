@@ -169,3 +169,5 @@ No webhooks, frontend, nightly scheduler, authentication, signed URLs, historica
 ## Cross-extraction reuse
 
 New jobs default to `downloadPolicy: reuseValid`; `refresh` bypasses other jobs while retaining same-job recovery. The policy does not change idempotent request identity. Summary includes `newlyDownloadedCount` and `reusedCount`; each result exposes `acquisitionSource`. Existing downloaded counts include confirmed reused files. Apply the additive migration before restarting API/worker. See [reuse, integrity checks, atomic storage and real acceptance](DOCUMENT_REUSE.md).
+
+See [extraction observability](EXTRACTION_OBSERVABILITY.md) for structured logs, persisted timing coverage, attempt history and the additive diagnostics migration.

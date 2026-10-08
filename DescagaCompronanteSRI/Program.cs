@@ -1,3 +1,4 @@
+using DescagaCompronanteSRI.Diagnostics;
 using DescagaCompronanteSRI.Jobs;
 using DescagaCompronanteSRI.Persistence;
 using Microsoft.EntityFrameworkCore;
@@ -17,6 +18,8 @@ var builder = WebApplication.CreateBuilder(new WebApplicationOptions
     ContentRootPath = Directory.GetCurrentDirectory(),
     WebRootPath = "wwwroot"
 });
+
+builder.Logging.AddExtractionJsonConsole();
 
 StorageConfiguration.AddStorageEnvironmentFile(builder.Configuration, builder.Environment);
 JobRegistration.AddJobEnvironmentFile(builder.Configuration, builder.Environment);
@@ -51,6 +54,7 @@ builder.Services.AddScoped<IIssuedDocumentsService, ConsultaComprobantesEmitidos
 
 builder.Services.AddSwaggerGen(c =>
 {
+    c.MapType<DiagnosticsCoverage>(() => EnumSchema<DiagnosticsCoverage>());
     c.MapType<DownloadPolicy>(() => EnumSchema<DownloadPolicy>());
     c.MapType<DocumentAcquisitionSource>(() => EnumSchema<DocumentAcquisitionSource>());
     c.MapType<ExecutionMode>(() => EnumSchema<ExecutionMode>());

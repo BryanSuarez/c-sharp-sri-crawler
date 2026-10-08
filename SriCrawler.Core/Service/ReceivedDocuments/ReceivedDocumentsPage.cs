@@ -1,3 +1,4 @@
+using DescagaCompronanteSRI.Diagnostics;
 using System.Globalization;
 using System.Diagnostics;
 using Microsoft.Extensions.Options;
@@ -16,7 +17,7 @@ public sealed class ReceivedDocumentsPage(ILogger<ReceivedDocumentsPage> logger,
     public const string Url = "https://srienlinea.sri.gob.ec/comprobantes-electronicos-internet/pages/consultas/recibidos/comprobantesRecibidos.jsf";
     public async Task<bool> OpenAsync(IReceivedDocumentsSession session)
     {
-        logger.LogInformation("Opening the received documents portal.");
+        ExtractionDiagnostics.Safely(() => logger.LogInformation("Opening the received documents portal."));
         string body = await session.GetPortalBodyAsync();
 
         if (!string.IsNullOrEmpty(body))
@@ -100,15 +101,19 @@ public sealed class ReceivedDocumentsPage(ILogger<ReceivedDocumentsPage> logger,
             for (var attempt = 1; attempt <= attempts; attempt++)
             {
                 if (attempt > 1)
+                {
+                    ExtractionDiagnostics.Event(logger, LogLevel.Warning, DiagnosticEvent.TransportRetry, code: captcha ? "captchaRetry" : "portalTransitionRetry", detail: attempt);
                     await Task.Delay(captcha ? SriRetryPolicy.CaptchaBackoff(attempt - 1)
                         : TimeSpan.FromMilliseconds(options.Value.RetryDelayMilliseconds * (attempt - 1)));
+                }
                 var timer = Stopwatch.StartNew();
                 await action.RefreshAsync();
                 var state = await page.EvaluateAsync<JsonElement>(ReceivedDocumentsDom.ReadState);
                 if (clicked && IsUpdated(state, action))
                 {
                     if (!IsCaptcha(state) && (previousPage is null || PageNumber(state) != previousPage))
-                        return await SnapshotAsync(page, code);
+                        return await ExtractionDiagnostics.MeasureAsync(DiagnosticOperation.TableRead, () => SnapshotAsync(page, code),
+                            value => value.IsSuccess ? DiagnosticOutcome.Succeeded : DiagnosticOutcome.Failed);
                 }
                 // A timed-out response may still arrive. Never dispatch another advance while it is pending,
                 // or while the portal already moved its paginator ahead of its table update.
@@ -129,21 +134,22 @@ public sealed class ReceivedDocumentsPage(ILogger<ReceivedDocumentsPage> logger,
                     {
                         if (IsCaptcha(state)) { captcha = true; break; }
                         if (previousPage is null || PageNumber(state) != previousPage)
-                            return await SnapshotAsync(page, code);
+                            return await ExtractionDiagnostics.MeasureAsync(DiagnosticOperation.TableRead, () => SnapshotAsync(page, code),
+                            value => value.IsSuccess ? DiagnosticOutcome.Succeeded : DiagnosticOutcome.Failed);
                     }
                     await Task.Delay(50);
                 }
-                logger.LogWarning("Portal transition to page {Page} was not confirmed on attempt {Attempt}/{Attempts}.",
-                    previousPage is null ? 1 : previousPage + 1, attempt, attempts);
-                logger.LogWarning("Portal action evidence: response completed {Completed}, response failed {Failed}, pending {Pending}, CAPTCHA rejected {Captcha}, table revision {Revision}, message revision {MessageRevision}.",
+                ExtractionDiagnostics.Safely(() => logger.LogWarning("Portal transition to page {Page} was not confirmed on attempt {Attempt}/{Attempts}.",
+                    previousPage is null ? 1 : previousPage + 1, attempt, attempts));
+                ExtractionDiagnostics.Safely(() => logger.LogWarning("Portal action evidence: response completed {Completed}, response failed {Failed}, pending {Pending}, CAPTCHA rejected {Captcha}, table revision {Revision}, message revision {MessageRevision}.",
                     action.ResponseCompleted, action.ResponseFailed, action.HasPendingRequest, IsCaptcha(state),
-                    state.GetProperty("revision").GetInt32(), state.GetProperty("messageRevision").GetInt32());
+                    state.GetProperty("revision").GetInt32(), state.GetProperty("messageRevision").GetInt32()));
             }
             return Failure(code, captcha ? "SRI CAPTCHA validation failed after the query retries." : "The portal response and expected table transition could not be confirmed.");
         }
         catch (Exception exception)
         {
-            logger.LogWarning(exception, "Received portal action failed for page {Page}.", previousPage is null ? 1 : previousPage + 1);
+            ExtractionDiagnostics.Event(logger, LogLevel.Warning, DiagnosticEvent.TransportRetry, code: "portalActionFailed", errorType: exception.GetType().Name);
             return Failure(code, "The portal table transition could not be completed.");
         }
         finally

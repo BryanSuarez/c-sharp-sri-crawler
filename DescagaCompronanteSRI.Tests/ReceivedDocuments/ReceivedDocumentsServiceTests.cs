@@ -1,3 +1,4 @@
+using DescagaCompronanteSRI.Diagnostics;
 using DescagaCompronanteSRI.Models.Responses;
 using DescagaCompronanteSRI.Jobs;
 using System.Text;
@@ -22,7 +23,13 @@ public class ReceivedDocumentsServiceTests
     public async Task Query_ProcessesAndDisposesContent(DownloadFormat format, DocumentParseStatus parseStatus)
     {
         var scenario = new Scenario();
+        var diagnostics = new ExtractionDiagnostics(TimeProvider.System, NullLogger.Instance);
+        using var diagnosticsScope = diagnostics.Enter(Guid.NewGuid(), "acme", Guid.NewGuid(), 1);
         var response = await scenario.Service.QueryAsync(Query(format));
+        var operations = diagnostics.Snapshot().Operations;
+        Assert.Equal(1, operations.Single(x => x.Name == "download").Count);
+        Assert.Equal(1, operations.Single(x => x.Name == "validation").SucceededCount);
+        Assert.Equal(1, operations.Single(x => x.Name == "storageWrite").SucceededCount);
         Assert.Equal(ExtractionStatus.Completed, response.Status);
         Assert.True(response.QuerySucceeded);
         Assert.Equal(1, response.DiscoveredCount);

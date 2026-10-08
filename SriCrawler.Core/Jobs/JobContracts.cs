@@ -1,3 +1,4 @@
+using DescagaCompronanteSRI.Diagnostics;
 using System.ComponentModel.DataAnnotations;
 using System.Text.Json;
 using DescagaCompronanteSRI.Serialization;
@@ -38,7 +39,7 @@ public sealed record ExtractionSummary(Guid ExtractionId, string CompanyId, stri
     DateTimeOffset CreatedAt, DateTimeOffset? StartedAt, DateTimeOffset? FinishedAt,
     DateTimeOffset? LastActivityAt, int DiscoveredCount, int DownloadedCount, int FailedCount,
     int ConversionFailedCount, int ConversionUnsupportedCount, PaginationProgress Pagination,
-    int ValidationIssueCount = 0, int MetadataIssueCount = 0, int NewlyDownloadedCount = 0, int ReusedCount = 0);
+    int ValidationIssueCount = 0, int MetadataIssueCount = 0, int NewlyDownloadedCount = 0, int ReusedCount = 0, ExtractionTimings? Timings = null);
 public sealed record JsonConversion(DocumentParseStatus Status, JsonElement? DocumentJson = null,
     string? ParserName = null, string? ParserVersion = null, string? ErrorCode = null)
 {
@@ -65,6 +66,7 @@ public interface IReceivedExtractionRunner
 public interface IExtractionJobs
 {
     Task<ExtractionAccepted> AcceptAsync(ReceivedDocumentsQuery query, Guid? clientRequestId, CancellationToken token);
+    Task<CursorPage<ExtractionAttemptSummary>?> AttemptsAsync(Guid id, string companyId, long cursor, int limit, CancellationToken token);
     Task<ExtractionSummary?> GetAsync(Guid id, string companyId, CancellationToken token);
     Task<CursorPage<JsonElement>?> DocumentsAsync(Guid id, string companyId, long cursor, int limit, CancellationToken token);
     Task<JsonElement?> DocumentAsync(Guid id, string companyId, long documentId, CancellationToken token);

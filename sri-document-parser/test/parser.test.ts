@@ -96,3 +96,28 @@ test('XML byte quota is independent of JSON escaping overhead', async () => {
     assert.equal((await app.inject({ method: 'POST', url: '/parse', payload: { requestId: 'escaping', xml: xml + 'x' } })).statusCode, 413);
   } finally { await app.close(); }
 });
+
+test('diagnostic logs are correlated and exclude XML, document JSON and external error messages', async () => {
+  const logs: Record<string, unknown>[] = [];
+  const app = buildApp(undefined, convertXml, entry => logs.push(entry));
+  try {
+    const response = await app.inject({ method: 'POST', url: '/parse', payload: { requestId: 'correlation-1', xml: invoice } });
+    assert.equal(response.statusCode, 200);
+    assert.equal(logs[0].requestId, 'correlation-1');
+    assert.equal(logs[0].outcome, 'parsed');
+    assert.ok(Number(logs[0].durationMs) >= 0);
+    assert.equal(JSON.stringify(logs).includes('Fixture issuer'), false);
+    assert.equal(JSON.stringify(logs).includes(key), false);
+  } finally { await app.close(); }
+  const failing = buildApp(undefined, async () => { throw new Error('SECRET XML CONNECTION PASSWORD'); }, entry => logs.push(entry));
+  try {
+    assert.equal((await failing.inject({ method: 'POST', url: '/parse', payload: { requestId: 'error-1', xml: invoice } })).statusCode, 500);
+    assert.equal(logs.at(-1)?.errorCode, 'parserFailed');
+    assert.equal(JSON.stringify(logs).includes('SECRET'), false);
+  } finally { await failing.close(); }
+});
+test('logging sink failures do not fail conversions', async () => {
+  const app = buildApp(undefined, convertXml, () => { throw new Error('sink unavailable'); });
+  try { assert.equal((await app.inject({ method: 'POST', url: '/parse', payload: { requestId: 'sink-1', xml: invoice } })).statusCode, 200); }
+  finally { await app.close(); }
+});

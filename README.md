@@ -646,3 +646,5 @@ Consulta [los formatos, estados, límites y pasos de migración](RECEIVED_DOCUME
 La [reutilización entre consultas y el guardado local atómico](DOCUMENT_REUSE.md) evitan descargas repetidas, mantienen los metadatos actuales y agregan `newlyDownloadedCount`, `reusedCount` y `acquisitionSource`.
 
 El [checklist de mejoras](IMPROVEMENT_CHECKLIST.md) conserva los 14 puntos originales, su estado y el siguiente bloque recomendado.
+
+Los tiempos por etapa e intento están disponibles en el estado de la extracción y en `/api/received-documents/extractions/{id}/attempts`. Consulta [la guía de observabilidad](EXTRACTION_OBSERVABILITY.md) para la migración, los logs JSON y el diagnóstico desde Warp/Docker.

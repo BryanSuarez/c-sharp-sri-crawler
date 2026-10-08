@@ -1,3 +1,4 @@
+using DescagaCompronanteSRI.Diagnostics;
 using DescagaCompronanteSRI.Contracts;
 using Microsoft.Extensions.Options;
 using DescagaCompronanteSRI.Validation;
@@ -43,7 +44,7 @@ public sealed class PdfDocumentDownloadStrategy(ILogger<PdfDocumentDownloadStrat
             catch (OperationCanceledException) when (token.IsCancellationRequested) { throw; }
             catch (Exception exception)
             {
-                logger.LogWarning(exception, "PDF download attempt {Attempt} failed.", attempt);
+                ExtractionDiagnostics.Event(logger, LogLevel.Warning, DiagnosticEvent.TransportRetry, code: "pdfDownloadRetry", errorType: exception.GetType().Name, detail: attempt);
                 await Task.Delay(SriRetryPolicy.DownloadBackoff(attempt), token);
             }
             finally { if (content is not null) await content.DisposeAsync(); }
