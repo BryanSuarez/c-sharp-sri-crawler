@@ -38,7 +38,7 @@ public sealed record ExtractionSummary(Guid ExtractionId, string CompanyId, stri
     DateTimeOffset CreatedAt, DateTimeOffset? StartedAt, DateTimeOffset? FinishedAt,
     DateTimeOffset? LastActivityAt, int DiscoveredCount, int DownloadedCount, int FailedCount,
     int ConversionFailedCount, int ConversionUnsupportedCount, PaginationProgress Pagination,
-    int ValidationIssueCount = 0, int MetadataIssueCount = 0);
+    int ValidationIssueCount = 0, int MetadataIssueCount = 0, int NewlyDownloadedCount = 0, int ReusedCount = 0);
 public sealed record JsonConversion(DocumentParseStatus Status, JsonElement? DocumentJson = null,
     string? ParserName = null, string? ParserVersion = null, string? ErrorCode = null)
 {
@@ -51,6 +51,8 @@ public interface ISriDocumentJsonParser
 }
 public interface IExtractionProgress
 {
+    Task PreparePageAsync(IReadOnlyList<string> keys, CancellationToken token) => Task.CompletedTask;
+    Task<ReceivedDocumentResponse?> FindSavedAsync(ReceivedDocumentMetadata metadata, int page, int row, CancellationToken token) => FindSavedAsync(metadata.AuthorizationNumber, page, row, token);
     Task StageAsync(ExtractionStage stage, CancellationToken token);
     Task<ReceivedDocumentResponse?> FindSavedAsync(string accessKey, int page, int row, CancellationToken token);
     Task SaveAsync(ReceivedDocumentResponse document, CancellationToken token);

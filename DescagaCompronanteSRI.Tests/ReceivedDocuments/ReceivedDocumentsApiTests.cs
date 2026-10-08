@@ -109,6 +109,7 @@ public sealed class ReceivedDocumentsApiTests : IClassFixture<ReceivedDocumentsA
     [Theory]
     [InlineData("downloadFormat", "unknown")]
     [InlineData("documentType", "unknown")]
+    [InlineData("downloadPolicy", "unknown")]
     public async Task Query_RejectsUnknownEnum(string field, string invalidValue)
     {
         var fields = JsonSerializer.Deserialize<Dictionary<string, object>>(ValidJson)!;
@@ -135,6 +136,7 @@ public sealed class ReceivedDocumentsApiTests : IClassFixture<ReceivedDocumentsA
     [Theory]
     [InlineData("documentType")]
     [InlineData("downloadFormat")]
+    [InlineData("downloadPolicy")]
     public async Task Query_RejectsNumericEnums(string field)
     {
         var fields = JsonSerializer.Deserialize<Dictionary<string, object>>(ValidJson)!;
@@ -270,6 +272,24 @@ public sealed class ReceivedDocumentsApiTests : IClassFixture<ReceivedDocumentsA
     public async Task Query_RejectsInvalidExecutionMode(string value) =>
         await AssertRejected(ValidJson.Replace("\"sync\"", value));
 
+    [Theory]
+    [InlineData("reuseValid", DownloadPolicy.ReuseValid)]
+    [InlineData("refresh", DownloadPolicy.Refresh)]
+    public async Task Query_PassesDownloadPolicyToPersistentJob(string value, DownloadPolicy expected)
+    {
+        var fields = JsonSerializer.Deserialize<Dictionary<string, object>>(ValidJson)!;
+        fields["downloadPolicy"] = value;
+        Assert.Equal(HttpStatusCode.OK, (await Post(JsonSerializer.Serialize(fields))).StatusCode);
+        Assert.Equal(expected, _factory.Received.LastQuery!.DownloadPolicy);
+    }
+    [Fact]
+    public async Task Query_DefaultPolicyIsReuseValidAndNullIsRejected()
+    {
+        Assert.Equal(HttpStatusCode.OK, (await Post(ValidJson)).StatusCode);
+        Assert.Equal(DownloadPolicy.ReuseValid, _factory.Received.LastQuery!.DownloadPolicy);
+        await AssertRejected(ValidJson.Replace("{", "{\"downloadPolicy\":null,", StringComparison.Ordinal));
+    }
+
     public sealed class StubJobs(StubReceivedService service) : IExtractionJobs
     {
         private readonly Dictionary<Guid, ReceivedDocumentsQuery> queries = [];
@@ -350,7 +370,7 @@ public sealed class ReceivedDocumentsApiTests : IClassFixture<ReceivedDocumentsA
                         AuthorizedAtIso = new DateTimeOffset(2026, 6, 1, 10, 30, 0, TimeSpan.FromHours(-5)), MetadataParseStatus = MetadataParseStatus.Partial },
                     StorageStatus = DocumentStorageStatus.Stored,
                     Validation = new() { Status = DocumentValidationStatus.Valid, IdentityStatus = DocumentIdentityStatus.Verified, ValidatorVersion = "1", Sha256 = "fixture" },
-                    DownloadFormat = query.DownloadFormat, DownloadStatus = DocumentDownloadStatus.Downloaded,
+                    AcquisitionSource = DocumentAcquisitionSource.Downloaded, DownloadFormat = query.DownloadFormat, DownloadStatus = DocumentDownloadStatus.Downloaded,
                     Storage = new DocumentStorageReference(StorageProvider.S3, "test-bucket",
                         "acme/1790012345001/2026/06/received/invoice/" + new string('1', 49) + ".xml"),
                     ParseStatus = DocumentParseStatus.Parsed

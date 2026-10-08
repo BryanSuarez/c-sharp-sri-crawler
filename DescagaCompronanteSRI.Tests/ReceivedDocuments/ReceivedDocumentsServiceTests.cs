@@ -525,6 +525,9 @@ public class ReceivedDocumentsServiceTests
             return Task.FromResult(new DocumentStorageReference(Provider, Provider == StorageProvider.Local ? null : "test-bucket",
                 DocumentStorageKey.Create(context, content.Format)) { LocalPath = Provider == StorageProvider.Local ? "/test/file" : null });
         }
+        public bool CanRead(DocumentStorageReference reference) => true;
+        public Task<DocumentStorageInspection> InspectAsync(DocumentStorageReference reference, CancellationToken cancellationToken = default) =>
+            Task.FromResult(new DocumentStorageInspection(StorageInspectionStatus.Exists));
         public Task<Stream> OpenReadAsync(DocumentStorageReference reference, CancellationToken cancellationToken = default) =>
             throw new NotSupportedException();
     }

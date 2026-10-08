@@ -14,6 +14,7 @@ public sealed class ReceivedDocumentsQueryRequest
         get => _executionMode;
         set => _executionMode = value;
     }
+    public DownloadPolicy DownloadPolicy { get; set; } = DownloadPolicy.ReuseValid;
     public Guid? ClientRequestId { get; set; }
     [Required, StringLength(64), RegularExpression(StorageIdentityRules.CompanyIdPattern)]
     public string CompanyId { get; set; } = "";

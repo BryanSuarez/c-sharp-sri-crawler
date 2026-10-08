@@ -641,6 +641,8 @@ docs/project-analysis.md
 
 Los importes inválidos o ambiguos devuelven `null`; las fechas conservan su texto original y añaden valores ISO. Los archivos XML/PDF se validan antes de almacenarse, con estados independientes de validación, almacenamiento y parsing. Los resultados históricos conservan validación `notChecked`.
 
-Consulta [los formatos, estados, límites y pasos de migración](RECEIVED_DOCUMENT_VALIDATION.md). El body de consulta y las rutas de almacenamiento permanecen iguales.
+Consulta [los formatos, estados, límites y pasos de migración](RECEIVED_DOCUMENT_VALIDATION.md). Las rutas de almacenamiento se conservan. La consulta admite `downloadPolicy`: `reuseValid` por defecto y `refresh` para volver a descargar.
+
+La [reutilización entre consultas y el guardado local atómico](DOCUMENT_REUSE.md) evitan descargas repetidas, mantienen los metadatos actuales y agregan `newlyDownloadedCount`, `reusedCount` y `acquisitionSource`.
 
 El [checklist de mejoras](IMPROVEMENT_CHECKLIST.md) conserva los 14 puntos originales, su estado y el siguiente bloque recomendado.

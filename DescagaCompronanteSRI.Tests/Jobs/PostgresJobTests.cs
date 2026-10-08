@@ -88,7 +88,7 @@ public sealed class PostgresJobTests
         DownloadStatus = DocumentDownloadStatus.Downloaded, ParseStatus = format == DownloadFormat.Xml ? DocumentParseStatus.Parsed : DocumentParseStatus.NotApplicable,
         StorageStatus = DocumentStorageStatus.Stored,
         Validation = new() { Status = DocumentValidationStatus.Valid, ValidatorVersion = "1", Sha256 = "fixture-hash", SizeBytes = 7 },
-        Storage = new(StorageProvider.Local, null, "test/key.xml"), SourceXml = "fixture", XmlHash = "fixture-hash"
+        ParsedDocument = new { receipt = key }, Storage = new(StorageProvider.Local, null, "test/key.xml") { Revision = "fixture-revision" }, SourceXml = "fixture", XmlHash = "fixture-hash"
     };
 
     [PostgresFact]
@@ -208,7 +208,7 @@ public sealed class PostgresJobTests
         Assert.Equal(query.User, owner.TaxpayerId);
         Assert.Equal("1719956854001", owner.IssuerTaxpayerId);
         Assert.Equal(2, await db.Files.CountAsync(x => x.DocumentId == owner.Id));
-        Assert.Equal(2, await db.Conversions.CountAsync(x => x.DocumentId == owner.Id));
+        Assert.Equal(1, await db.Conversions.CountAsync(x => x.DocumentId == owner.Id));
         Assert.Single(await db.Results.Where(x => x.ExtractionId == first.Id).ToListAsync());
         using var scope = provider.CreateScope();
         var jobs = scope.ServiceProvider.GetRequiredService<IExtractionJobs>();
@@ -244,7 +244,10 @@ public sealed class PostgresJobTests
         await Progress(provider, first.Id, first.Attempt, query).SaveAsync(Document(key), default);
         parser.Fail = true;
         var second = await Start(provider, query);
-        await Progress(provider, second.Id, second.Attempt, query).SaveAsync(Document(key), default);
+        var changed = Document(key);
+        changed.XmlHash = "different-valid-bytes";
+        changed.Validation = changed.Validation with { Sha256 = changed.XmlHash };
+        await Progress(provider, second.Id, second.Attempt, query).SaveAsync(changed, default);
         using var scope = provider.CreateScope();
         var jobs = scope.ServiceProvider.GetRequiredService<IExtractionJobs>();
         var summary = await jobs.GetAsync(second.Id, query.CompanyId, default);
@@ -482,15 +485,204 @@ public sealed class PostgresJobTests
         }
     }
 
+    [PostgresFact]
+    public async Task IndependentExtraction_ReusesFileAndConversionWithCurrentMetadataAndNoRead()
+    {
+        var parser = new StubParser(); await using var provider = await Provider(parser);
+        var query = Query(); var key = new string('7', 49); var first = await Start(provider, query);
+        await Progress(provider, first.Id, first.Attempt, query).SaveAsync(Document(key), default);
+        var second = await Start(provider, query);
+        var progress = Progress(provider, second.Id, second.Attempt, query);
+        await progress.PreparePageAsync([key], default);
+        var metadata = new ReceivedDocumentMetadata { AuthorizationNumber = key, Amount = 45.67m, IssuedDate = new(2026, 9, 12),
+            MetadataParseStatus = MetadataParseStatus.Partial, Errors = [new(ExtractionErrorCode.InvalidMetadata, "Current field error.", Field: "taxes")] };
+        var reused = await progress.FindSavedAsync(metadata, 2, 8, default);
+        Assert.NotNull(reused); Assert.Equal(DocumentAcquisitionSource.Reused, reused.AcquisitionSource);
+        Assert.Equal(45.67m, reused.Metadata!.Amount); Assert.Equal(2, reused.PageNumber); Assert.Equal(8, reused.RowIndex);
+        Assert.All(reused.Errors, e => { Assert.Equal(2, e.PageNumber); Assert.Equal(8, e.RowIndex); });
+        Assert.Equal(1, parser.Calls); Assert.Equal(0, ((MemoryStorage)provider.GetRequiredService<IDocumentStorage>()).Reads);
+        await using var db = await provider.GetRequiredService<IDbContextFactory<CrawlerDbContext>>().CreateDbContextAsync();
+        var rows = await db.Results.Where(x => x.ExtractionId == first.Id || x.ExtractionId == second.Id).OrderBy(x => x.Id).ToListAsync();
+        Assert.Equal(rows[0].FileId, rows[1].FileId); Assert.Equal(rows[0].ConversionId, rows[1].ConversionId);
+        Assert.Equal(DocumentAcquisitionSource.Downloaded, rows[0].AcquisitionSource);
+        using var scope = provider.CreateScope(); var jobs = scope.ServiceProvider.GetRequiredService<IExtractionJobs>();
+        var summary = await jobs.GetAsync(second.Id, query.CompanyId, default);
+        Assert.Equal(1, summary!.ReusedCount); Assert.Equal(0, summary.NewlyDownloadedCount);
+        Assert.Equal(summary.DownloadedCount, summary.ReusedCount + summary.NewlyDownloadedCount);
+        Assert.Equal(summary.DiscoveredCount, summary.DownloadedCount + summary.FailedCount);
+        var list = await jobs.DocumentsAsync(second.Id, query.CompanyId, 0, 100, default);
+        Assert.Equal("reused", list!.Items.Single().GetProperty("acquisitionSource").GetString());
+    }
+
+    [PostgresFact]
+    public async Task Reuse_IsolatedByOwnerCompanyDirectionTypeAndFormatAndPreservesOriginalPeriod()
+    {
+        await using var provider = await Provider(new StubParser());
+        var query = Query(); var key = new string('7', 49); var first = await Start(provider, query);
+        await Progress(provider, first.Id, first.Attempt, query).SaveAsync(Document(key), default);
+        foreach (var different in new[] { query with { CompanyId = "another-" + Guid.NewGuid().ToString("N") },
+            query with { User = "1719956854001" }, query with { DocumentType = DocumentType.CreditNote }, query with { DownloadFormat = DownloadFormat.Pdf } })
+        {
+            var run = await Start(provider, different);
+            Assert.Null(await Progress(provider, run.Id, run.Attempt, different).FindSavedAsync(key, 1, 0, default));
+        }
+        var nextPeriod = query with { Month = 10 }; var second = await Start(provider, nextPeriod);
+        Assert.NotNull(await Progress(provider, second.Id, second.Attempt, nextPeriod).FindSavedAsync(key, 1, 0, default));
+        await using var db = await provider.GetRequiredService<IDbContextFactory<CrawlerDbContext>>().CreateDbContextAsync();
+        var document = await db.Documents.SingleAsync(x => x.CompanyId == query.CompanyId);
+        var file = await db.Files.SingleAsync(x => x.DocumentId == document.Id);
+        Assert.Equal(9, file.Month);
+        document.Direction = DocumentDirection.Issued; await db.SaveChangesAsync();
+        var third = await Start(provider, query);
+        Assert.Null(await Progress(provider, third.Id, third.Attempt, query).FindSavedAsync(key, 1, 0, default));
+    }
+
+    [PostgresFact]
+    public async Task Refresh_BypassesOtherJobsButRecoveryPreservesAcquisitionAndIdempotency()
+    {
+        await using var provider = await Provider(new StubParser()); var query = Query(); var key = new string('8', 49);
+        var first = await Start(provider, query); await Progress(provider, first.Id, first.Attempt, query).SaveAsync(Document(key), default);
+        var refresh = query with { DownloadPolicy = DownloadPolicy.Refresh }; var second = await Start(provider, refresh);
+        var progress = Progress(provider, second.Id, second.Attempt, refresh);
+        Assert.Null(await progress.FindSavedAsync(key, 1, 0, default));
+        await progress.SaveAsync(Document(key), default);
+        Assert.Equal(DocumentAcquisitionSource.Downloaded, (await progress.FindSavedAsync(key, 2, 3, default))!.AcquisitionSource);
+        using var scope = provider.CreateScope(); var jobs = scope.ServiceProvider.GetRequiredService<IExtractionJobs>();
+        var requestId = Guid.NewGuid(); var accepted = await jobs.AcceptAsync(query, requestId, default);
+        Assert.Equal(accepted.ExtractionId, (await jobs.AcceptAsync(refresh, requestId, default)).ExtractionId);
+        await using var db = await provider.GetRequiredService<IDbContextFactory<CrawlerDbContext>>().CreateDbContextAsync();
+        Assert.Equal(DownloadPolicy.ReuseValid, (await db.Extractions.SingleAsync(x => x.Id == accepted.ExtractionId)).DownloadPolicy);
+        Assert.Single(await db.Results.Where(x => x.ExtractionId == second.Id).ToListAsync());
+    }
+
+    [PostgresFact]
+    public async Task Inspection_MissingAllowsDownloadButFailureIsExplicitAndChangedRevisionRevalidates()
+    {
+        var parser = new StubParser(); await using var provider = await Provider(parser); var query = Query(); var key = new string('9', 49);
+        var first = await Start(provider, query); await Progress(provider, first.Id, first.Attempt, query).SaveAsync(Document(key), default);
+        var storage = (MemoryStorage)provider.GetRequiredService<IDocumentStorage>();
+        var second = await Start(provider, query); storage.InspectionStatus = StorageInspectionStatus.Missing;
+        Assert.Null(await Progress(provider, second.Id, second.Attempt, query).FindSavedAsync(key, 1, 0, default));
+        storage.InspectionStatus = StorageInspectionStatus.Failed;
+        var failed = await Progress(provider, second.Id, second.Attempt, query).FindSavedAsync(key, 1, 0, default);
+        Assert.NotNull(failed); Assert.Equal(DocumentDownloadStatus.Failed, failed.DownloadStatus);
+        Assert.Equal(DocumentStorageStatus.NotAttempted, failed.StorageStatus);
+        Assert.Equal(ExtractionErrorCode.StorageVerificationFailed, failed.Errors.Single().Code);
+        storage.InspectionStatus = StorageInspectionStatus.Exists;
+        var xml = DocumentValidatorTests.Fixture(); storage.Bytes = Encoding.UTF8.GetBytes(xml.Replace(DocumentValidatorTests.AccessKey(xml), key));
+        var third = await Start(provider, query);
+        var verified = await Progress(provider, third.Id, third.Attempt, query).FindSavedAsync(key, 1, 0, default);
+        Assert.NotNull(verified); Assert.Equal(Convert.ToHexString(SHA256.HashData(storage.Bytes)), verified.Validation.Sha256);
+        Assert.Equal(1, storage.Reads); Assert.Equal(2, parser.Calls);
+        storage.Bytes = "<html>portal error</html>"u8.ToArray();
+        var fourth = await Start(provider, query);
+        Assert.Null(await Progress(provider, fourth.Id, fourth.Attempt, query).FindSavedAsync(key, 1, 0, default));
+    }
+
+    [PostgresFact]
+    public async Task Reuse_ThousandResultsUsesPageCandidatesWithoutReadingFilesOrCallingParserAgain()
+    {
+        var parser = new StubParser(); await using var provider = await Provider(parser); var query = Query();
+        var first = await Start(provider, query); var original = Progress(provider, first.Id, first.Attempt, query);
+        var keys = Enumerable.Range(1, 1000).Select(x => x.ToString("D49", System.Globalization.CultureInfo.InvariantCulture)).ToArray();
+        foreach (var key in keys) await original.SaveAsync(Document(key), default);
+        var second = await Start(provider, query); var progress = Progress(provider, second.Id, second.Attempt, query);
+        foreach (var page in keys.Chunk(50))
+        {
+            await progress.PreparePageAsync(page, default);
+            foreach (var key in page) Assert.Equal(DocumentAcquisitionSource.Reused, (await progress.FindSavedAsync(key, 1, 0, default))!.AcquisitionSource);
+        }
+        Assert.Equal(1000, parser.Calls); Assert.Equal(0, ((MemoryStorage)provider.GetRequiredService<IDocumentStorage>()).Reads);
+        using var scope = provider.CreateScope(); var summary = await scope.ServiceProvider.GetRequiredService<IExtractionJobs>().GetAsync(second.Id, query.CompanyId, default);
+        Assert.Equal(1000, summary!.ReusedCount); Assert.Equal(0, summary.NewlyDownloadedCount);
+    }
+
+    [PostgresFact]
+    public async Task Reuse_ParserVersionAndValidationProfileChangesReadStoredXmlWithoutSri()
+    {
+        var parser = new StubParser(); await using var provider = await Provider(parser); var query = Query();
+        var xml = DocumentValidatorTests.Fixture(); var key = DocumentValidatorTests.AccessKey(xml);
+        var storage = (MemoryStorage)provider.GetRequiredService<IDocumentStorage>(); storage.Bytes = Encoding.UTF8.GetBytes(xml);
+        var first = await Start(provider, query); var result = Document(key);
+        var evidence = await provider.GetRequiredService<IDocumentValidator>().ValidateAsync(new DocumentContent(new MemoryStream(storage.Bytes), DownloadFormat.Xml), query.DocumentType, key);
+        result.Validation = evidence; result.SourceXml = xml; result.XmlHash = evidence.Sha256;
+        result.Storage = result.Storage! with { Revision = Convert.ToHexString(SHA256.HashData(storage.Bytes)) };
+        await Progress(provider, first.Id, first.Attempt, query).SaveAsync(result, default);
+        await using var db = await provider.GetRequiredService<IDbContextFactory<CrawlerDbContext>>().CreateDbContextAsync();
+        var old = await db.Conversions.SingleAsync(x => x.DocumentId == db.Documents.Where(d => d.CompanyId == query.CompanyId).Select(d => d.Id).Single());
+        old.ParserVersion = "previous-version"; await db.SaveChangesAsync();
+        var second = await Start(provider, query);
+        Assert.NotNull(await Progress(provider, second.Id, second.Attempt, query).FindSavedAsync(key, 1, 0, default));
+        Assert.Equal(1, storage.Reads); Assert.Equal(2, parser.Calls);
+        var file = await db.Files.SingleAsync(x => x.DocumentId == old.DocumentId);
+        file.ValidationProfile = "previous-profile"; await db.SaveChangesAsync();
+        var third = await Start(provider, query);
+        Assert.NotNull(await Progress(provider, third.Id, third.Attempt, query).FindSavedAsync(key, 1, 0, default));
+        Assert.Equal(2, storage.Reads); Assert.Equal(2, parser.Calls);
+        // Historical snapshots and conversions keep their original evidence.
+        await db.Entry(old).ReloadAsync(); Assert.Equal("previous-version", old.ParserVersion);
+    }
+
+    [PostgresFact]
+    public async Task Reuse_PdfKeepsXmlConversionAndDifferentConfiguredProviderRequiresDownload()
+    {
+        var parser = new StubParser(); await using var provider = await Provider(parser); var query = Query(); var key = new string('5', 49);
+        var xmlRun = await Start(provider, query); await Progress(provider, xmlRun.Id, xmlRun.Attempt, query).SaveAsync(Document(key), default);
+        var pdfQuery = query with { DownloadFormat = DownloadFormat.Pdf }; var first = await Start(provider, pdfQuery);
+        await Progress(provider, first.Id, first.Attempt, pdfQuery).SaveAsync(Document(key, DownloadFormat.Pdf), default);
+        var second = await Start(provider, pdfQuery);
+        var pdf = await Progress(provider, second.Id, second.Attempt, pdfQuery).FindSavedAsync(key, 1, 0, default);
+        Assert.NotNull(pdf); Assert.Equal(DocumentParseStatus.NotApplicable, pdf.ParseStatus);
+        Assert.Equal(1, parser.Calls); Assert.Equal(0, ((MemoryStorage)provider.GetRequiredService<IDocumentStorage>()).Reads);
+        await using var db = await provider.GetRequiredService<IDbContextFactory<CrawlerDbContext>>().CreateDbContextAsync();
+        var file = await db.Files.SingleAsync(x => x.Format == DownloadFormat.Pdf && x.DocumentId == db.Documents.Where(d => d.CompanyId == query.CompanyId).Select(d => d.Id).Single());
+        file.StorageJson = ExtractionJobs.Serialize(new DocumentStorageReference(StorageProvider.S3, "previous-bucket", "key.pdf")); await db.SaveChangesAsync();
+        var third = await Start(provider, pdfQuery);
+        Assert.Null(await Progress(provider, third.Id, third.Attempt, pdfQuery).FindSavedAsync(key, 1, 0, default));
+        Assert.Single(await db.Conversions.Where(x => x.DocumentId == file.DocumentId).ToListAsync());
+    }
+
+    [PostgresFact]
+    public async Task Reuse_PrefersExactPeriodThenNewestKnownStorageDate()
+    {
+        await using var provider = await Provider(new StubParser()); var query = Query(); var key = new string('4', 49);
+        var first = await Start(provider, query); await Progress(provider, first.Id, first.Attempt, query).SaveAsync(Document(key), default);
+        var august = query with { Month = 8 }; var latest = await Start(provider, august);
+        await Progress(provider, latest.Id, latest.Attempt, august).SaveAsync(Document(key), default);
+        await using var db = await provider.GetRequiredService<IDbContextFactory<CrawlerDbContext>>().CreateDbContextAsync();
+        var originalFile = await db.Files.SingleAsync(x => x.DocumentId == db.Documents.Where(d => d.CompanyId == query.CompanyId).Select(d => d.Id).Single() && x.Month == 9);
+        originalFile.StoredAt = null; await db.SaveChangesAsync();
+        var exact = await Start(provider, query);
+        await Progress(provider, exact.Id, exact.Attempt, query).FindSavedAsync(key, 1, 0, default);
+        Assert.Equal(originalFile.Id, (await db.Results.SingleAsync(x => x.ExtractionId == exact.Id)).FileId);
+        var october = query with { Month = 10 }; var other = await Start(provider, october);
+        await Progress(provider, other.Id, other.Attempt, october).FindSavedAsync(key, 1, 0, default);
+        var chosen = await db.Files.SingleAsync(x => x.Id == db.Results.Where(r => r.ExtractionId == other.Id).Select(r => r.FileId).Single());
+        Assert.Equal(8, chosen.Month);
+    }
+
     private sealed class StubParser : ISriDocumentJsonParser
     {
         public bool Fail { get; set; }
-        public Task<JsonConversion> ParseAsync(string xml, DocumentType type, string key, CancellationToken token) =>
-            Task.FromResult(Fail ? new JsonConversion(DocumentParseStatus.Failed, ErrorCode: "conversionFailed")
-                : new JsonConversion(DocumentParseStatus.Parsed, JsonSerializer.SerializeToElement(new { infoTributaria = new { ruc = "1719956854001", claveAcceso = key } }), "fixture", "1.0"));
+        public int Calls { get; private set; }
+        public Task<JsonConversion> ParseAsync(string xml, DocumentType type, string key, CancellationToken token)
+        {
+            Calls++;
+            return Task.FromResult(Fail ? new JsonConversion(DocumentParseStatus.Failed, ErrorCode: "conversionFailed")
+                : new JsonConversion(DocumentParseStatus.Parsed, JsonSerializer.SerializeToElement(new { infoTributaria = new { ruc = "1719956854001", claveAcceso = key } }), HttpSriDocumentJsonParser.ParserName, HttpSriDocumentJsonParser.ParserVersion));
+        }
     }
     private sealed class MemoryStorage : IDocumentStorage
     {
+        public bool CanRead(DocumentStorageReference reference) => reference.Provider == StorageProvider.Local;
+        public StorageInspectionStatus InspectionStatus { get; set; } = StorageInspectionStatus.Exists;
+        public int Inspections { get; private set; }
+        public Task<DocumentStorageInspection> InspectAsync(DocumentStorageReference reference, CancellationToken cancellationToken = default)
+        {
+            Inspections++;
+            var revision = Bytes.SequenceEqual("fixture"u8.ToArray()) ? "fixture-revision" : Convert.ToHexString(SHA256.HashData(Bytes));
+            return Task.FromResult(new DocumentStorageInspection(InspectionStatus, Bytes.Length, revision));
+        }
         public byte[] Bytes { get; set; } = Encoding.UTF8.GetBytes("fixture");
         public int Reads { get; private set; }
         public Task<Models.Storage.DocumentStorageReference> SaveAsync(DocumentStorageContext context, DocumentContent content, CancellationToken cancellationToken = default) => throw new NotSupportedException();

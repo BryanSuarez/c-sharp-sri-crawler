@@ -112,6 +112,8 @@ public sealed class ReceivedDocumentsService(
 
             result.Pagination.PagesProcessed++;
             rowsVisited += snapshot.Rows.Count;
+            if (progress is not null) await progress.PreparePageAsync(snapshot.Rows.Select(x => x.Result.Value?.Metadata.AuthorizationNumber)
+                .Where(x => x is { Length: 49 } && x.All(char.IsAsciiDigit)).Cast<string>().Distinct(StringComparer.Ordinal).ToArray(), token);
             foreach (var row in snapshot.Rows)
             {
                 var key = row.Result.Value?.Metadata.AuthorizationNumber;
@@ -123,7 +125,7 @@ public sealed class ReceivedDocumentsService(
                 }
                 token.ThrowIfCancellationRequested();
                 var document = key is { Length: 49 } && progress is not null
-                    ? await progress.FindSavedAsync(key, expectedPage, row.RowIndex, token) : null;
+                    ? await progress.FindSavedAsync(row.Result.Value!.Metadata, expectedPage, row.RowIndex, token) : null;
                 if (document is null)
                 {
                     document = await ProcessDocumentAsync(session, query, row, expectedPage, token);
@@ -131,18 +133,22 @@ public sealed class ReceivedDocumentsService(
                 }
                 if (result.AccumulateDocuments) result.Documents.Add(document);
                 result.ProcessedCount++;
-                if (document.DownloadStatus == DocumentDownloadStatus.Downloaded) result.SavedCount++;
+                if (document.DownloadStatus == DocumentDownloadStatus.Downloaded)
+                {
+                    result.SavedCount++;
+                    if (document.AcquisitionSource == DocumentAcquisitionSource.Reused) result.ReusedFiles++;
+                }
                 if (document.Validation.Status is DocumentValidationStatus.Invalid or DocumentValidationStatus.Unsupported or DocumentValidationStatus.Failed)
                     result.ValidationIssues++;
                 if (document.MetadataParseStatus is MetadataParseStatus.Partial or MetadataParseStatus.Failed)
                     result.MetadataIssues++;
                 document.SourceXml = null;
                 if (progress is not null) await progress.CheckpointAsync(result, token);
-                logger.LogInformation("Received page {Page}, row {Row}: {Status}, parse {ParseStatus}; {Count} results accumulated.",
-                    expectedPage, row.RowIndex, document.DownloadStatus, document.ParseStatus, result.DiscoveredCount);
+                logger.LogInformation("Received page {Page}, row {Row}: {Status}, acquisition {AcquisitionSource}, parse {ParseStatus}; {Count} results accumulated.",
+                    expectedPage, row.RowIndex, document.DownloadStatus, document.AcquisitionSource, document.ParseStatus, result.DiscoveredCount);
             }
-            logger.LogInformation("Received page {Page} processed: {Discovered} discovered, {Downloaded} saved, {Failed} failed.",
-                expectedPage, result.DiscoveredCount, result.DownloadedCount, result.FailedCount);
+            logger.LogInformation("Received page {Page} processed: {Discovered} discovered, {Downloaded} available, {Reused} reused, {Failed} failed.",
+                expectedPage, result.DiscoveredCount, result.DownloadedCount, result.ReusedCount, result.FailedCount);
 
             if (snapshot.PageNumber is null)
             {
@@ -238,6 +244,7 @@ public sealed class ReceivedDocumentsService(
             result.StorageStatus = DocumentStorageStatus.Stored;
             result.FilePath = result.Storage.LocalPath;
             result.DownloadStatus = DocumentDownloadStatus.Downloaded;
+            result.AcquisitionSource = DocumentAcquisitionSource.Downloaded;
             content.Stream.Position = 0;
             stage = ExtractionErrorCode.ParsingFailed;
             DocumentParseResult parsed;

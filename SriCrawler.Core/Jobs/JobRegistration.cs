@@ -56,6 +56,7 @@ public static class JobRegistration
         services.AddScoped<IDocumentFormatValidator, PdfDocumentValidator>();
         services.AddScoped<IDocumentValidator, DocumentValidator>();
         services.AddScoped<DocumentReprocessor>();
+        services.AddScoped<IDocumentReuseResolver, DocumentReuseResolver>();
         services.AddHangfire((provider, config) => config.UseSimpleAssemblyNameTypeSerializer().UseRecommendedSerializerSettings()
             .UsePostgreSqlStorage(c => c.UseNpgsqlConnection(provider.GetRequiredService<IOptions<ExtractionJobOptions>>().Value.ConnectionString),
                 new PostgreSqlStorageOptions { SchemaName = "hangfire", UseSlidingInvisibilityTimeout = true,

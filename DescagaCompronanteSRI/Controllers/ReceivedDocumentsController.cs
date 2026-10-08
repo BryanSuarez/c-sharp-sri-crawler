@@ -35,7 +35,7 @@ public sealed class ReceivedDocumentsController(IExtractionJobs jobs, IOptions<E
         {
             CompanyId = request.CompanyId, User = taxpayerId, AdditionalUser = string.IsNullOrWhiteSpace(request.AdditionalUser) ? null : request.AdditionalUser.Trim(),
             Password = request.Password, Year = request.Year.Value, Month = request.Month.Value, Day = request.Day.Value,
-            DocumentType = request.DocumentType!.Value, DownloadFormat = request.DownloadFormat!.Value
+            DocumentType = request.DocumentType!.Value, DownloadFormat = request.DownloadFormat!.Value, DownloadPolicy = request.DownloadPolicy
         };
         try
         {

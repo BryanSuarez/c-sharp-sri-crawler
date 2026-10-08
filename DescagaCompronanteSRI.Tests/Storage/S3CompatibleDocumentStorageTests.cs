@@ -104,9 +104,43 @@ public class S3CompatibleDocumentStorageTests
         Assert.False(client.DownloadStream!.CanRead);
     }
 
+    [Theory]
+    [InlineData("S3")]
+    [InlineData("R2")]
+    public async Task Inspection_UsesHeadWithoutReadingBytesAndPreservesUploadRevision(string provider)
+    {
+        using var client = new FakeS3(); var settings = StorageTestSupport.Options(provider);
+        var storage = new S3CompatibleDocumentStorage(client, Options.Create(settings));
+        await using var content = new DocumentContent(new MemoryStream("synthetic"u8.ToArray()), DownloadFormat.Xml);
+        var reference = await storage.SaveAsync(StorageTestSupport.Context, content);
+        var inspection = await storage.InspectAsync(reference);
+        Assert.Equal(StorageInspectionStatus.Exists, inspection.Status);
+        Assert.Equal(9, inspection.SizeBytes); Assert.Equal(reference.Revision, inspection.Revision);
+        Assert.Equal(reference.Key, client.HeadRequest!.Key); Assert.Equal(reference.Bucket, client.HeadRequest.BucketName);
+        Assert.Null(client.GetRequest);
+        Assert.False(storage.CanRead(reference with { Bucket = "another" }));
+        Assert.False(storage.CanRead(reference with { Provider = StorageProvider.Local }));
+    }
+
+    [Theory]
+    [InlineData(HttpStatusCode.NotFound, StorageInspectionStatus.Missing)]
+    [InlineData(HttpStatusCode.Forbidden, StorageInspectionStatus.Failed)]
+    [InlineData(HttpStatusCode.InternalServerError, StorageInspectionStatus.Failed)]
+    public async Task Inspection_DoesNotTreatAccessFailuresAsMissing(HttpStatusCode status, StorageInspectionStatus expected)
+    {
+        using var client = new FakeS3 { StatusCode = status };
+        var storage = new S3CompatibleDocumentStorage(client, Options.Create(StorageTestSupport.Options()));
+        var reference = new DocumentStorageReference(StorageProvider.S3, "test-bucket", DocumentStorageKey.Create(StorageTestSupport.Context, DownloadFormat.Xml));
+        Assert.Equal(expected, (await storage.InspectAsync(reference)).Status);
+        Assert.Null(client.GetRequest);
+        using var cancellation = new CancellationTokenSource(); cancellation.Cancel();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => storage.InspectAsync(reference, cancellation.Token));
+    }
+
     private sealed class FakeS3() : AmazonS3Client(new AnonymousAWSCredentials(), RegionEndpoint.USEast1)
     {
         public PutObjectRequest? PutRequest { get; private set; }
+        public GetObjectMetadataRequest? HeadRequest { get; private set; }
         public GetObjectRequest? GetRequest { get; private set; }
         public byte[] Bytes { get; private set; } = [];
         public CancellationToken CancellationToken { get; private set; }
@@ -124,7 +158,13 @@ public class S3CompatibleDocumentStorageTests
             using var copy = new MemoryStream();
             await request.InputStream.CopyToAsync(copy, cancellationToken);
             Bytes = copy.ToArray();
-            return new() { HttpStatusCode = StatusCode };
+            return new() { HttpStatusCode = StatusCode, ETag = "opaque-provider-revision" };
+        }
+        public override Task<GetObjectMetadataResponse> GetObjectMetadataAsync(GetObjectMetadataRequest request, CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested(); HeadRequest = request;
+            if (StatusCode != HttpStatusCode.OK) throw new AmazonS3Exception("Synthetic HEAD error") { StatusCode = StatusCode };
+            return Task.FromResult(new GetObjectMetadataResponse { HttpStatusCode = StatusCode, ContentLength = Bytes.Length, ETag = "opaque-provider-revision" });
         }
         public override Task<GetObjectResponse> GetObjectAsync(GetObjectRequest request, CancellationToken cancellationToken = default)
         {
