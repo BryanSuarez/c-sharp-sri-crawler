@@ -1,3 +1,4 @@
+using DescagaCompronanteSRI.Diagnostics;
 using System.Text.Json.Serialization;
 using DescagaCompronanteSRI.Models.Enums;
 using DescagaCompronanteSRI.Models.Extraction;
@@ -11,6 +12,7 @@ public sealed class ReceivedDocumentsResponse
     [JsonIgnore] public int SavedCount { get; set; }
     public required string CompanyId { get; init; }
     public required string TaxpayerId { get; init; }
+    public ExtractionTimings? Timings { get; set; }
     public string BusinessName { get; set; } = "";
     public ExtractionStatus Status { get; set; } = ExtractionStatus.Failed;
     public int DiscoveredCount => AccumulateDocuments ? Documents.Count : ProcessedCount;

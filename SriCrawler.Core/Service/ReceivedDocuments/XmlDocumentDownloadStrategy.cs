@@ -1,3 +1,4 @@
+using DescagaCompronanteSRI.Diagnostics;
 using System.Text;
 using Microsoft.Extensions.Options;
 using DescagaCompronanteSRI.Validation;
@@ -52,6 +53,7 @@ public sealed class XmlDocumentDownloadStrategy(
                     return OperationResult<DocumentContent>.Failure(ExtractionErrorCode.InvalidDocument, "XML encoding is invalid.");
                 if (string.IsNullOrWhiteSpace(response))
                 {
+                    ExtractionDiagnostics.Event(logger, LogLevel.Warning, DiagnosticEvent.TransportRetry, code: "emptyDownloadResponse", detail: attempt);
                     await Task.Delay(SriRetryPolicy.DownloadBackoff(attempt), token);
                     continue;
                 }
@@ -66,7 +68,7 @@ public sealed class XmlDocumentDownloadStrategy(
             catch (OperationCanceledException) when (token.IsCancellationRequested) { throw; }
             catch (Exception exception)
             {
-                logger.LogWarning(exception, "XML download attempt {Attempt} failed.", attempt);
+                ExtractionDiagnostics.Event(logger, LogLevel.Warning, DiagnosticEvent.TransportRetry, code: "xmlDownloadRetry", errorType: exception.GetType().Name, detail: attempt);
             }
         }
         return OperationResult<DocumentContent>.Failure(ExtractionErrorCode.DownloadFailed, "XML download attempts were exhausted.");

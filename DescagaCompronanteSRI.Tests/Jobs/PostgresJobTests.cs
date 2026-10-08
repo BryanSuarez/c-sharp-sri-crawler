@@ -1,3 +1,4 @@
+using DescagaCompronanteSRI.Diagnostics;
 using System.Security.Cryptography;
 using DescagaCompronanteSRI.Validation;
 using DescagaCompronanteSRI.Services.Parsing;
@@ -271,6 +272,8 @@ public sealed class PostgresJobTests
         await worker.ExecuteAsync(accepted.ExtractionId, default);
         await worker.ExecuteAsync(accepted.ExtractionId, default);
         Assert.Equal(1, runner.Calls);
+        var history = await jobs.AttemptsAsync(accepted.ExtractionId, query.CompanyId, 0, 100, default);
+        Assert.Single(history!.Items); Assert.Equal(DiagnosticsCoverage.Complete, history.Items[0].Coverage);
         var summary = await jobs.GetAsync(accepted.ExtractionId, query.CompanyId, default);
         Assert.Equal(JobStatus.Completed, summary!.JobStatus); Assert.Equal(ExtractionStatus.Completed, summary.ExtractionStatus);
         await using var db = await provider.GetRequiredService<IDbContextFactory<CrawlerDbContext>>().CreateDbContextAsync();
@@ -493,11 +496,16 @@ public sealed class PostgresJobTests
         await Progress(provider, first.Id, first.Attempt, query).SaveAsync(Document(key), default);
         var second = await Start(provider, query);
         var progress = Progress(provider, second.Id, second.Attempt, query);
+        var diagnostics = new ExtractionDiagnostics(TimeProvider.System, NullLogger.Instance);
+        using var diagnosticsScope = diagnostics.Enter(second.Id, query.CompanyId, second.Attempt, 1);
         await progress.PreparePageAsync([key], default);
         var metadata = new ReceivedDocumentMetadata { AuthorizationNumber = key, Amount = 45.67m, IssuedDate = new(2026, 9, 12),
             MetadataParseStatus = MetadataParseStatus.Partial, Errors = [new(ExtractionErrorCode.InvalidMetadata, "Current field error.", Field: "taxes")] };
         var reused = await progress.FindSavedAsync(metadata, 2, 8, default);
         Assert.NotNull(reused); Assert.Equal(DocumentAcquisitionSource.Reused, reused.AcquisitionSource);
+        var operations = diagnostics.Snapshot().Operations;
+        Assert.Contains(operations, x => x.Name == "storageInspection");
+        Assert.DoesNotContain(operations, x => x.Name is "download" or "storageWrite" or "validation" or "jsonParsing");
         Assert.Equal(45.67m, reused.Metadata!.Amount); Assert.Equal(2, reused.PageNumber); Assert.Equal(8, reused.RowIndex);
         Assert.All(reused.Errors, e => { Assert.Equal(2, e.PageNumber); Assert.Equal(8, e.RowIndex); });
         Assert.Equal(1, parser.Calls); Assert.Equal(0, ((MemoryStorage)provider.GetRequiredService<IDocumentStorage>()).Reads);

@@ -1,3 +1,4 @@
+using DescagaCompronanteSRI.Diagnostics;
 using DescagaCompronanteSRI.Persistence;
 using Hangfire;
 using Microsoft.EntityFrameworkCore;
@@ -14,7 +15,7 @@ public sealed class JobDispatcher(IServiceScopeFactory scopes, IOptions<Extracti
         {
             try { await DispatchOnceAsync(stoppingToken); }
             catch (Exception e) when (!stoppingToken.IsCancellationRequested)
-            { logger.LogWarning("Job dispatch temporarily unavailable ({ErrorType}).", e.GetType().Name); }
+            { ExtractionDiagnostics.Event(logger, LogLevel.Warning, DiagnosticEvent.DiagnosticsUnavailable, code: "dispatchUnavailable", errorType: e.GetType().Name); }
             await Task.Delay(TimeSpan.FromSeconds(options.Value.DispatchIntervalSeconds), stoppingToken);
         }
     }
@@ -33,12 +34,19 @@ public sealed class JobDispatcher(IServiceScopeFactory scopes, IOptions<Extracti
             }
             await db.SaveChangesAsync(token);
             await transaction.CommitAsync(token);
+            foreach (var item in pending)
+            {
+                using var logScope = ExtractionDiagnostics.SafeScope(logger, new Dictionary<string, object> { ["extractionId"] = item.ExtractionId });
+                ExtractionDiagnostics.Event(logger, LogLevel.Information, DiagnosticEvent.Dispatched);
+            }
         }
         db.ChangeTracker.Clear();
         var now = DateTimeOffset.UtcNow;
         var stale = await db.Extractions.Where(x => (x.JobStatus == JobStatus.Running && x.LastActivityAt < now.AddMinutes(-2)) || (x.JobStatus == JobStatus.Queued && x.CreatedAt < now.AddMinutes(-2) && (x.LastActivityAt == null || x.LastActivityAt < now.AddMinutes(-2)))).OrderBy(x => x.CreatedAt).ThenBy(x => x.Id).Take(20).ToListAsync(token);
         foreach (var job in stale)
         {
+            using var logScope = ExtractionDiagnostics.SafeScope(logger, new Dictionary<string, object> { ["extractionId"] = job.Id, ["companyId"] = job.CompanyId });
+            ExtractionDiagnostics.Event(logger, LogLevel.Warning, DiagnosticEvent.DispatchRecovered, code: "staleExecution");
             jobs.Enqueue<ExtractionWorker>(x => x.ExecuteAsync(job.Id, CancellationToken.None));
             // Active account locks still guard paused/live workers. Avoid dispatching on every poll.
             job.LastActivityAt = now;
@@ -48,6 +56,8 @@ public sealed class JobDispatcher(IServiceScopeFactory scopes, IOptions<Extracti
         {
             job.EncryptedPassword = null;
             if (job.JobStatus is JobStatus.Completed or JobStatus.Failed) continue;
+            var activeAttempt = job.ActiveAttemptId is Guid attemptId ? await db.Attempts.SingleOrDefaultAsync(x => x.Id == attemptId, token) : null;
+            if (activeAttempt is not null && activeAttempt.FinishedAt is null) AttemptDiagnosticsStore.MarkInterrupted(activeAttempt, now);
             job.JobStatus = JobStatus.Failed;
             job.ExtractionStatus = await db.Results.AnyAsync(x => x.ExtractionId == job.Id && x.DownloadStatus == Models.Enums.DocumentDownloadStatus.Downloaded, token)
                 ? Models.Enums.ExtractionStatus.Partial : Models.Enums.ExtractionStatus.Failed;

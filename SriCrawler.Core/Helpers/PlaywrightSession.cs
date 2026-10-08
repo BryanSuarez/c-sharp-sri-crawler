@@ -1,3 +1,5 @@
+using DescagaCompronanteSRI.Diagnostics;
+using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Playwright;
 using System;
 using System.Threading.Tasks;
@@ -16,28 +18,30 @@ namespace DescagaCompronanteSRI.Helpers
         private IBrowser _browser = null!;
         private IBrowserContext _ctx = null!;
 
-        public static async Task<PlaywrightSession> CreateAsync()
+        private ILogger _logger = NullLogger.Instance;
+
+        public static async Task<PlaywrightSession> CreateAsync(ILogger? logger = null)
         {
-            Console.WriteLine("[Session] Iniciando Playwright...");
-            var s = new PlaywrightSession();
+            var s = new PlaywrightSession { _logger = logger ?? NullLogger.Instance };
+            ExtractionDiagnostics.Event(s._logger, LogLevel.Debug, DiagnosticEvent.BrowserEvent, code: "browserStarting");
             try { await s.InitAsync(); }
             catch
             {
                 await s.DisposeAsync();
                 throw;
             }
-            Console.WriteLine("[Session] Sesión lista.");
+            ExtractionDiagnostics.Event(s._logger, LogLevel.Debug, DiagnosticEvent.BrowserEvent, code: "browserReady");
             return s;
         }
 
         private async Task InitAsync()
         {
-            Console.WriteLine("[Session] Lanzando Chromium...");
+            ExtractionDiagnostics.Event(_logger, LogLevel.Debug, DiagnosticEvent.BrowserEvent, code: "browserLaunching");
             _pw = await Playwright.CreateAsync();
 
             var headless = !bool.TryParse(Environment.GetEnvironmentVariable("SRI_BROWSER_HEADLESS"), out var configuredHeadless)
                 || configuredHeadless;
-            Console.WriteLine($"[Session] Browser headless mode: {headless}");
+            ExtractionDiagnostics.Event(_logger, LogLevel.Debug, DiagnosticEvent.BrowserEvent, code: "browserMode", detail: headless);
 
             _browser = await _pw.Chromium.LaunchAsync(new BrowserTypeLaunchOptions
             {
@@ -65,7 +69,7 @@ namespace DescagaCompronanteSRI.Helpers
                 }.Where(argument => headless || argument != "--headless=new").ToArray()
             });
 
-            Console.WriteLine("[Session] Creando contexto...");
+            ExtractionDiagnostics.Event(_logger, LogLevel.Debug, DiagnosticEvent.BrowserEvent, code: "contextCreating");
             _ctx = await _browser.NewContextAsync(new BrowserNewContextOptions
             {
                 Locale = "es-EC",
@@ -78,7 +82,7 @@ namespace DescagaCompronanteSRI.Helpers
                             "Chrome/136.0.0.0 Safari/537.36",
             });
 
-            Console.WriteLine("[Session] Inyectando script anti-detección...");
+            ExtractionDiagnostics.Event(_logger, LogLevel.Debug, DiagnosticEvent.BrowserEvent, code: "browserInitializing");
             await _ctx.AddInitScriptAsync(@"
                 // Ocultar webdriver
                 Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
@@ -130,13 +134,13 @@ namespace DescagaCompronanteSRI.Helpers
                 };
             ");
 
-            Console.WriteLine("[Session] Abriendo página...");
+            ExtractionDiagnostics.Event(_logger, LogLevel.Debug, DiagnosticEvent.BrowserEvent, code: "pageCreating");
             Page = await _ctx.NewPageAsync();
 
             Page.RequestFailed += (_, req) =>
-                Console.WriteLine($"[Session][RED-FALLO] {req.Url} — {req.Failure}");
+                ExtractionDiagnostics.Event(_logger, LogLevel.Debug, DiagnosticEvent.BrowserEvent, code: "networkRequestFailed", detail: req.ResourceType);
 
-            Console.WriteLine("[Session] Página lista.");
+            ExtractionDiagnostics.Event(_logger, LogLevel.Debug, DiagnosticEvent.BrowserEvent, code: "pageReady");
         }
 
         /// <summary>Cierra el modal de Material si aparece, por múltiples estrategias.</summary>
@@ -147,7 +151,7 @@ namespace DescagaCompronanteSRI.Helpers
                 await Page.WaitForSelectorAsync("mat-dialog-container",
                     new() { Timeout = 3_500, State = WaitForSelectorState.Visible });
 
-                Console.WriteLine("   [Modal] cerrando...");
+                ExtractionDiagnostics.Event(_logger, LogLevel.Debug, DiagnosticEvent.BrowserEvent, code: "modalClosing");
                 await Page.Keyboard.PressAsync("Escape");
                 await Task.Delay(600);
 
@@ -171,7 +175,7 @@ namespace DescagaCompronanteSRI.Helpers
                         document.body.classList.remove('cdk-global-scrollblock');
                     }");
 
-                Console.WriteLine("   [Modal] cerrado.");
+                ExtractionDiagnostics.Event(_logger, LogLevel.Debug, DiagnosticEvent.BrowserEvent, code: "modalClosed");
             }
             catch (TimeoutException) { /* sin modal, ignorar */ }
         }
@@ -191,12 +195,12 @@ namespace DescagaCompronanteSRI.Helpers
 
         public async ValueTask DisposeAsync()
         {
-            Console.WriteLine("[Session] Cerrando sesión...");
+            ExtractionDiagnostics.Event(_logger, LogLevel.Debug, DiagnosticEvent.BrowserEvent, code: "sessionClosing");
             try { await Page.CloseAsync(); } catch { }
             try { await _ctx.CloseAsync(); } catch { }
             try { await _browser.CloseAsync(); } catch { }
             try { _pw.Dispose(); } catch { }
-            Console.WriteLine("[Session] Sesión cerrada.");
+            ExtractionDiagnostics.Event(_logger, LogLevel.Debug, DiagnosticEvent.BrowserEvent, code: "sessionClosed");
         }
     }
 }

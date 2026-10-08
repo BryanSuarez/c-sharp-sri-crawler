@@ -1,3 +1,4 @@
+using DescagaCompronanteSRI.Diagnostics;
 using System.Globalization;
 using System.Text.Json;
 using DescagaCompronanteSRI.Jobs;
@@ -62,6 +63,16 @@ public sealed class ReceivedDocumentsController(IExtractionJobs jobs, IOptions<E
     public async Task<IActionResult> Status(Guid id, [FromQuery] string companyId, CancellationToken token)
     {
         var result = await jobs.GetAsync(id, companyId, token);
+        return result is null ? NotFound() : Ok(result);
+    }
+    /// <summary>Lists attempt diagnostics without loading document contents.</summary>
+    [HttpGet("extractions/{id:guid}/attempts")]
+    [ProducesResponseType(typeof(CursorPage<ExtractionAttemptSummary>), 200)]
+    public async Task<IActionResult> Attempts(Guid id, [FromQuery] string companyId, CancellationToken token,
+        [FromQuery] long cursor = 0, [FromQuery] int limit = 100)
+    {
+        if (cursor < 0 || limit is < 1 or > 500) return BadRequest(new { message = "Invalid cursor or limit." });
+        var result = await jobs.AttemptsAsync(id, companyId, cursor, limit, token);
         return result is null ? NotFound() : Ok(result);
     }
     [HttpGet("extractions/{id:guid}/documents")]

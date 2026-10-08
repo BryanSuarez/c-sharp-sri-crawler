@@ -1,3 +1,4 @@
+using DescagaCompronanteSRI.Diagnostics;
 using DescagaCompronanteSRI.Jobs;
 using Microsoft.Extensions.Options;
 using DescagaCompronanteSRI.Contracts;
@@ -31,12 +32,14 @@ public sealed class ReceivedDocumentsService(
 
             stage = ExtractionErrorCode.PortalAccessFailed;
             if (progress is not null) await progress.StageAsync(ExtractionStage.PortalAccess, token);
-            if (!await page.OpenAsync(session).WaitAsync(token))
+            if (!await ExtractionDiagnostics.MeasureAsync(DiagnosticOperation.PortalAccess, () => page.OpenAsync(session).WaitAsync(token),
+                ok => ok ? DiagnosticOutcome.Succeeded : DiagnosticOutcome.Failed))
                 return Fail(result, stage, "The received documents portal could not be opened.");
 
             stage = ExtractionErrorCode.QueryFailed;
             if (progress is not null) await progress.StageAsync(ExtractionStage.Query, token);
-            var queryResult = await page.QueryAsync(session, query).WaitAsync(token);
+            var queryResult = await ExtractionDiagnostics.MeasureAsync(DiagnosticOperation.Query, () => page.QueryAsync(session, query).WaitAsync(token),
+                value => value.IsSuccess ? DiagnosticOutcome.Succeeded : DiagnosticOutcome.Failed);
             if (!queryResult.IsSuccess)
                 return Fail(result, queryResult.Error!.Code, queryResult.Error.Message);
 
@@ -52,7 +55,7 @@ public sealed class ReceivedDocumentsService(
         catch (Exception) when (progress is not null) { throw; }
         catch (Exception exception)
         {
-            logger.LogError(exception, "Received extraction failed during {Stage}.", stage);
+            ExtractionDiagnostics.Event(logger, LogLevel.Error, DiagnosticEvent.AttemptInterrupted, code: stage.ToString(), errorType: exception.GetType().Name);
             if (!result.QuerySucceeded)
                 return Fail(result, stage, "Received document extraction could not be executed.");
             result.Pagination.Status = PaginationStatus.Incomplete;
@@ -76,7 +79,7 @@ public sealed class ReceivedDocumentsService(
         {
             consistent = false;
             result.Errors.Add(new(code, message, row, expectedPage));
-            logger.LogWarning("Received pagination page {Page}: {Reason}", expectedPage, message);
+            ExtractionDiagnostics.Safely(() => logger.LogWarning("Received pagination page {Page}: {Reason}", expectedPage, message));
         }
 
         while (true)
@@ -116,6 +119,7 @@ public sealed class ReceivedDocumentsService(
                 .Where(x => x is { Length: 49 } && x.All(char.IsAsciiDigit)).Cast<string>().Distinct(StringComparer.Ordinal).ToArray(), token);
             foreach (var row in snapshot.Rows)
             {
+                using var documentScope = ExtractionDiagnostics.DocumentScope(logger, expectedPage, row.RowIndex, ExtractionDiagnostics.Name(query.DownloadFormat));
                 var key = row.Result.Value?.Metadata.AuthorizationNumber;
                 if (key is { Length: 49 } && key.All(char.IsAsciiDigit) && !keys.Add(key))
                 {
@@ -142,13 +146,18 @@ public sealed class ReceivedDocumentsService(
                     result.ValidationIssues++;
                 if (document.MetadataParseStatus is MetadataParseStatus.Partial or MetadataParseStatus.Failed)
                     result.MetadataIssues++;
+                foreach (var error in document.Errors)
+                    ExtractionDiagnostics.Event(logger, LogLevel.Warning, DiagnosticEvent.DocumentIssue, code: ExtractionDiagnostics.Name(error.Code),
+                        stage: ExtractionStage.Processing, detail: document.Storage is null ? null : ExtractionDiagnostics.Name(document.Storage.Provider));
                 document.SourceXml = null;
                 if (progress is not null) await progress.CheckpointAsync(result, token);
-                logger.LogInformation("Received page {Page}, row {Row}: {Status}, acquisition {AcquisitionSource}, parse {ParseStatus}; {Count} results accumulated.",
-                    expectedPage, row.RowIndex, document.DownloadStatus, document.AcquisitionSource, document.ParseStatus, result.DiscoveredCount);
+                ExtractionDiagnostics.Safely(() => logger.LogDebug("Received page {Page}, row {Row}: {Status}, acquisition {AcquisitionSource}, parse {ParseStatus}, provider {provider}; {Count} results accumulated.",
+                    expectedPage, row.RowIndex, document.DownloadStatus, ExtractionDiagnostics.Name(document.AcquisitionSource), ExtractionDiagnostics.Name(document.ParseStatus),
+                    document.Storage is null ? null : ExtractionDiagnostics.Name(document.Storage.Provider), result.DiscoveredCount));
             }
-            logger.LogInformation("Received page {Page} processed: {Discovered} discovered, {Downloaded} available, {Reused} reused, {Failed} failed.",
-                expectedPage, result.DiscoveredCount, result.DownloadedCount, result.ReusedCount, result.FailedCount);
+            ExtractionDiagnostics.Event(logger, LogLevel.Information, DiagnosticEvent.PageProcessed, detail: expectedPage);
+            ExtractionDiagnostics.Safely(() => logger.LogInformation("Received page {Page} processed: {Discovered} discovered, {Downloaded} available, {Reused} reused, {Failed} failed.",
+                expectedPage, result.DiscoveredCount, result.DownloadedCount, result.ReusedCount, result.FailedCount));
 
             if (snapshot.PageNumber is null)
             {
@@ -173,7 +182,8 @@ public sealed class ReceivedDocumentsService(
                 return;
             }
             expectedPage++;
-            var next = await page.MoveNextAsync(session, snapshot).WaitAsync(token);
+            var next = await ExtractionDiagnostics.MeasureAsync(DiagnosticOperation.Pagination, () => page.MoveNextAsync(session, snapshot).WaitAsync(token),
+                value => value.IsSuccess ? DiagnosticOutcome.Succeeded : DiagnosticOutcome.Failed);
             if (!next.IsSuccess)
             {
                 Error(next.Error!.Code, next.Error.Message);
@@ -208,7 +218,8 @@ public sealed class ReceivedDocumentsService(
             result.Metadata = row.Value!.Metadata;
             result.Errors.AddRange(result.Metadata.Errors.Select(error => error with { RowIndex = rowIndex, PageNumber = pageNumber }));
             stage = ExtractionErrorCode.DownloadFailed;
-            var download = await downloader.DownloadAsync(session, row.Value, query.DownloadFormat, token);
+            var download = await ExtractionDiagnostics.MeasureAsync(DiagnosticOperation.Download, () => downloader.DownloadAsync(session, row.Value, query.DownloadFormat, token),
+                value => value.IsSuccess ? DiagnosticOutcome.Succeeded : DiagnosticOutcome.Failed);
             if (!download.IsSuccess)
             {
                 var error = download.Error! with { RowIndex = rowIndex, PageNumber = pageNumber };
@@ -221,7 +232,10 @@ public sealed class ReceivedDocumentsService(
 
             await using var content = download.Value!;
             stage = ExtractionErrorCode.ValidationFailed;
-            result.Validation = await validator.ValidateAsync(content, query.DocumentType, result.Metadata.AuthorizationNumber, token);
+            result.Validation = await ExtractionDiagnostics.MeasureAsync(DiagnosticOperation.Validation,
+                () => validator.ValidateAsync(content, query.DocumentType, result.Metadata.AuthorizationNumber, token),
+                value => value.Status == DocumentValidationStatus.Valid ? DiagnosticOutcome.Succeeded :
+                    value.Status == DocumentValidationStatus.Unsupported ? DiagnosticOutcome.Unsupported : DiagnosticOutcome.Failed);
             result.Errors.AddRange(result.Validation.Errors.Select(error => error with { RowIndex = rowIndex, PageNumber = pageNumber }));
             if (result.Validation.Status != DocumentValidationStatus.Valid) return result;
             result.SourceXml = content.SourceXml;
@@ -238,9 +252,9 @@ public sealed class ReceivedDocumentsService(
             }
             stage = ExtractionErrorCode.StorageFailed;
             result.StorageStatus = DocumentStorageStatus.Failed;
-            result.Storage = await storage.SaveAsync(new DocumentStorageContext(
+            result.Storage = await ExtractionDiagnostics.MeasureAsync(DiagnosticOperation.StorageWrite, () => storage.SaveAsync(new DocumentStorageContext(
                 query.CompanyId, query.User, query.Year, query.Month, DocumentDirection.Received, query.DocumentType,
-                result.Metadata.AuthorizationNumber), content, token);
+                result.Metadata.AuthorizationNumber), content, token));
             result.StorageStatus = DocumentStorageStatus.Stored;
             result.FilePath = result.Storage.LocalPath;
             result.DownloadStatus = DocumentDownloadStatus.Downloaded;
@@ -250,12 +264,14 @@ public sealed class ReceivedDocumentsService(
             DocumentParseResult parsed;
             try
             {
-                parsed = await parser.ParseAsync(content, query.DocumentType).WaitAsync(token);
+                parsed = await ExtractionDiagnostics.MeasureAsync(DiagnosticOperation.LegacyParsing, () => parser.ParseAsync(content, query.DocumentType).WaitAsync(token),
+                    value => value.Status == DocumentParseStatus.Failed ? DiagnosticOutcome.Failed :
+                        value.Status == DocumentParseStatus.Unsupported ? DiagnosticOutcome.Unsupported : DiagnosticOutcome.Succeeded);
             }
             catch (Exception) when (token.IsCancellationRequested) { throw new OperationCanceledException(token); }
             catch (Exception exception)
             {
-                logger.LogWarning(exception, "Document interpretation failed at row {RowIndex}.", rowIndex);
+                ExtractionDiagnostics.Event(logger, LogLevel.Warning, DiagnosticEvent.OperationFinished, code: "parsingFailed", errorType: exception.GetType().Name);
                 parsed = new(DocumentParseStatus.Failed, Error: new(stage, "Document content could not be interpreted."));
             }
             result.ParseStatus = parsed.Status;
@@ -265,7 +281,7 @@ public sealed class ReceivedDocumentsService(
         catch (Exception) when (token.IsCancellationRequested) { throw new OperationCanceledException(token); }
         catch (Exception exception)
         {
-            logger.LogWarning(exception, "Document processing failed at row {RowIndex} during {Stage}.", rowIndex, stage);
+            ExtractionDiagnostics.Event(logger, LogLevel.Warning, DiagnosticEvent.OperationFinished, code: stage.ToString(), errorType: exception.GetType().Name);
             var error = new ExtractionError(stage, "Document processing failed.", rowIndex, pageNumber);
             result.Errors.Add(error);
             if (stage == ExtractionErrorCode.ValidationFailed)

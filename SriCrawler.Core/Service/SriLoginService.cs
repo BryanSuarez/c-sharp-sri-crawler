@@ -1,3 +1,5 @@
+using DescagaCompronanteSRI.Diagnostics;
+using Microsoft.Extensions.Logging.Abstractions;
 using DescagaCompronanteSRI.Contracts;
 using DescagaCompronanteSRI.Helpers;
 using DescagaCompronanteSRI.Models.Dtos;
@@ -6,8 +8,9 @@ using Microsoft.AspNetCore.WebUtilities;
 
 namespace DescagaCompronanteSRI.Services;
 
-public sealed class SriLoginService : ISriLoginService
+public sealed class SriLoginService(ILogger<SriLoginService>? logger = null) : ISriLoginService
 {
+    private readonly ILogger log = logger ?? NullLogger<SriLoginService>.Instance;
     private const string BaseUrl = "https://srienlinea.sri.gob.ec";
 
     public async Task<SriUserProfile?> LoginAsync(
@@ -16,7 +19,7 @@ public sealed class SriLoginService : ISriLoginService
         string password,
         string? additionalUser)
     {
-        Console.WriteLine("[Login] Navegando a página de login...");
+        ExtractionDiagnostics.Event(log, LogLevel.Debug, DiagnosticEvent.BrowserEvent, code: "loginProgress");
         await session.Page.GotoAsync(
             BaseUrl + "/auth/realms/Internet/protocol/openid-connect/auth" +
             "?client_id=app-sri-claves-angular" +
@@ -24,11 +27,11 @@ public sealed class SriLoginService : ISriLoginService
             "&response_mode=fragment&response_type=code&scope=openid",
             new() { WaitUntil = WaitUntilState.DOMContentLoaded });
 
-        Console.WriteLine("[Login] Esperando campo #usuario...");
+        ExtractionDiagnostics.Event(log, LogLevel.Debug, DiagnosticEvent.BrowserEvent, code: "loginProgress");
         await session.Page.WaitForSelectorAsync("#usuario", new() { Timeout = 20_000 });
-        Console.WriteLine("[Login] ✓ Formulario visible.");
+        ExtractionDiagnostics.Event(log, LogLevel.Debug, DiagnosticEvent.BrowserEvent, code: "loginProgress");
 
-        Console.WriteLine($"[Login] Ingresando credenciales — usuario: {user.ToUpperInvariant()} | password.Length: {password?.Length ?? 0}");
+        ExtractionDiagnostics.Event(log, LogLevel.Debug, DiagnosticEvent.BrowserEvent, code: "loginProgress");
         await session.Page.EvaluateAsync(@"([u, p]) => {
             const set = (sel, val) => {
                 const el = document.querySelector(sel);
@@ -43,20 +46,20 @@ public sealed class SriLoginService : ISriLoginService
 
         if (!string.IsNullOrWhiteSpace(additionalUser))
         {
-            Console.WriteLine($"[Login] Ingresando usuarioAdicional: {additionalUser}");
+            ExtractionDiagnostics.Event(log, LogLevel.Debug, DiagnosticEvent.BrowserEvent, code: "loginProgress");
             await session.Page.EvaluateAsync(
                 "ci => { const el = document.querySelector('#ciAdicional'); if (el) el.value = ci; }",
                 additionalUser);
         }
         else
         {
-            Console.WriteLine("[Login] usuarioAdicional vacío, omitiendo.");
+            ExtractionDiagnostics.Event(log, LogLevel.Debug, DiagnosticEvent.BrowserEvent, code: "loginProgress");
         }
 
-        Console.WriteLine("[Login] Haciendo clic en #kc-login...");
+        ExtractionDiagnostics.Event(log, LogLevel.Debug, DiagnosticEvent.BrowserEvent, code: "loginProgress");
         await session.Page.ClickAsync("#kc-login");
 
-        Console.WriteLine("[Login] Esperando respuesta (#sri-menu o .kc-feedback-text)...");
+        ExtractionDiagnostics.Event(log, LogLevel.Debug, DiagnosticEvent.BrowserEvent, code: "loginProgress");
         try
         {
             await session.Page.WaitForSelectorAsync("#sri-menu, .kc-feedback-text", new() { Timeout = 30_000 });
@@ -67,33 +70,22 @@ public sealed class SriLoginService : ISriLoginService
             {
                 // Keycloak accepted the credentials, but the Angular profile has not rendered.
                 // ReceivedDocumentsPage still verifies access to the protected application.
-                Console.WriteLine("[Login] Trusted authorization redirect received; profile menu was not rendered. Application access will be verified separately.");
+                ExtractionDiagnostics.Event(log, LogLevel.Warning, DiagnosticEvent.ProfileUnavailable, code: "profileUnavailable");
                 return new SriUserProfile { TaxpayerId = user };
             }
-            var evidence = await session.Page.EvaluateAsync<string>("""
-                () => JSON.stringify({
-                    path: location.pathname,
-                    menuPresent: !!document.querySelector('#sri-menu'),
-                    loginFormPresent: !!document.querySelector('#usuario'),
-                    authorizationCodePresent: new URLSearchParams(location.hash.slice(1)).has('code'),
-                    authorizationErrorPresent: new URLSearchParams(location.hash.slice(1)).has('error'),
-                    feedback: [...document.querySelectorAll('.kc-feedback-text, .alert-error, .alert-warning')]
-                        .map(e => e.textContent.trim()).join(' ').slice(0, 300)
-                })
-                """);
-            Console.WriteLine($"[Login] Response timeout evidence: {evidence}");
+            ExtractionDiagnostics.Event(log, LogLevel.Warning, DiagnosticEvent.BrowserEvent, code: "loginResponseTimeout");
             throw;
         }
         // Authentication redirects can contain temporary authorization codes.
-        Console.WriteLine($"[Login] URL tras login: {new Uri(session.Page.Url).GetLeftPart(UriPartial.Path)}");
+        ExtractionDiagnostics.Event(log, LogLevel.Debug, DiagnosticEvent.BrowserEvent, code: "loginProgress");
 
         if (await session.Page.QuerySelectorAsync(".kc-feedback-text") is { } err)
         {
-            Console.WriteLine($"[Login] ✗ Error credenciales: {(await err.InnerTextAsync()).Trim()}");
+            ExtractionDiagnostics.Event(log, LogLevel.Warning, DiagnosticEvent.BrowserEvent, code: "credentialsRejected");
             return null;
         }
 
-        Console.WriteLine("[Login] ✓ Login exitoso.");
+        ExtractionDiagnostics.Event(log, LogLevel.Debug, DiagnosticEvent.BrowserEvent, code: "authenticationAccepted");
         await session.CerrarModalAsync();
         return await ReadProfileAsync(session);
     }
@@ -109,12 +101,16 @@ public sealed class SriLoginService : ISriLoginService
             !string.IsNullOrWhiteSpace(code.ToString());
     }
 
-    private static async Task<SriUserProfile> ReadProfileAsync(PlaywrightSession session)
+    private Task<SriUserProfile> ReadProfileAsync(PlaywrightSession session) =>
+        ExtractionDiagnostics.MeasureAsync(DiagnosticOperation.ProfileRead, () => ReadProfileCoreAsync(session),
+            p => string.IsNullOrWhiteSpace(p.BusinessName) ? DiagnosticOutcome.Failed : DiagnosticOutcome.Succeeded);
+
+    private async Task<SriUserProfile> ReadProfileCoreAsync(PlaywrightSession session)
     {
         var profile = new SriUserProfile();
         try
         {
-            Console.WriteLine("[Perfil] Navegando a perfil...");
+            ExtractionDiagnostics.Event(log, LogLevel.Debug, DiagnosticEvent.BrowserEvent, code: "profileReading");
             await session.Page.GotoAsync(
                 BaseUrl + "/sri-en-linea/contribuyente/perfil",
                 new() { WaitUntil = WaitUntilState.DOMContentLoaded, Timeout = 12_000 });
@@ -124,11 +120,12 @@ public sealed class SriLoginService : ISriLoginService
             profile.BusinessName = await session.Page.EvaluateAsync<string>(
                 "() => document.querySelector('#id_nombre_razon_social')?.textContent?.trim() ?? ''");
 
-            Console.WriteLine($"[Perfil] ✓ RUC: {profile.TaxpayerId} | {profile.BusinessName}");
+            if (string.IsNullOrWhiteSpace(profile.BusinessName) || string.IsNullOrWhiteSpace(profile.TaxpayerId))
+                ExtractionDiagnostics.Event(log, LogLevel.Warning, DiagnosticEvent.ProfileUnavailable, code: "profileIncomplete");
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"[Perfil] ℹ No crítico: {ex.Message}");
+            ExtractionDiagnostics.Event(log, LogLevel.Warning, DiagnosticEvent.BrowserEvent, code: "profileReadFailed", errorType: ex.GetType().Name);
         }
 
         return profile;

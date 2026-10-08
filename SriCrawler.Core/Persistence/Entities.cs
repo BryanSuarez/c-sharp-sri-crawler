@@ -29,6 +29,10 @@ public sealed class ExtractionRecord
 }
 public sealed class ExtractionAttempt
 {
+    public string? DiagnosticsJson { get; set; }
+    public int? DiagnosticsVersion { get; set; }
+    public long DiagnosticsSequence { get; set; }
+    public DateTimeOffset? DiagnosticsUpdatedAt { get; set; }
     public Guid Id { get; set; }
     public Guid ExtractionId { get; set; }
     public int Number { get; set; }

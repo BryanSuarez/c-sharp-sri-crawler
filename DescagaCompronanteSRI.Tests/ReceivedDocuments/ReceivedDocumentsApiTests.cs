@@ -1,3 +1,4 @@
+using DescagaCompronanteSRI.Diagnostics;
 using DescagaCompronanteSRI.Jobs;
 using Microsoft.Extensions.Options;
 using System.Net;
@@ -227,6 +228,7 @@ public sealed class ReceivedDocumentsApiTests : IClassFixture<ReceivedDocumentsA
         var spec = JsonDocument.Parse(await _client.GetStringAsync("/swagger/v1/swagger.json")).RootElement;
         var paths = spec.GetProperty("paths");
         Assert.True(paths.TryGetProperty("/api/received-documents/query", out _));
+        Assert.True(paths.TryGetProperty("/api/received-documents/extractions/{id}/attempts", out _));
         Assert.False(paths.TryGetProperty("/api/ConsultaComprobantes/consultar", out _));
         Assert.True(paths.TryGetProperty("/api/SriEmitidos/consultar", out _));
         var properties = spec.GetProperty("components").GetProperty("schemas").GetProperty("ReceivedDocumentsQueryRequest").GetProperty("properties");
@@ -290,6 +292,27 @@ public sealed class ReceivedDocumentsApiTests : IClassFixture<ReceivedDocumentsA
         await AssertRejected(ValidJson.Replace("{", "{\"downloadPolicy\":null,", StringComparison.Ordinal));
     }
 
+    [Theory]
+    [InlineData(-1, 100)]
+    [InlineData(0, 0)]
+    [InlineData(0, 501)]
+    public async Task Attempts_RejectInvalidCursorAndLimit(int cursor, int limit)
+    {
+        var response = await _client.GetAsync($"/api/received-documents/extractions/{Guid.NewGuid()}/attempts?companyId=acme&cursor={cursor}&limit={limit}");
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+    }
+    [Fact]
+    public async Task Attempts_UsesScopedHistoryAndSerializesCoverage()
+    {
+        var accepted = await _client.PostAsync("/api/received-documents/query", new StringContent(ValidJson.Replace("\"sync\"", "\"async\""), Encoding.UTF8, "application/json"));
+        var id = JsonDocument.Parse(await accepted.Content.ReadAsStringAsync()).RootElement.GetProperty("extractionId").GetGuid();
+        var path = $"/api/received-documents/extractions/{id}/attempts";
+        var response = await _client.GetAsync(path + "?companyId=acme");
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal("notAvailable", JsonDocument.Parse(await response.Content.ReadAsStringAsync()).RootElement.GetProperty("items")[0].GetProperty("coverage").GetString());
+        Assert.Equal(HttpStatusCode.NotFound, (await _client.GetAsync(path + "?companyId=other")).StatusCode);
+    }
+
     public sealed class StubJobs(StubReceivedService service) : IExtractionJobs
     {
         private readonly Dictionary<Guid, ReceivedDocumentsQuery> queries = [];
@@ -300,6 +323,9 @@ public sealed class ReceivedDocumentsApiTests : IClassFixture<ReceivedDocumentsA
         }
         public async Task<ReceivedDocumentsResponse?> ResultAsync(Guid id, string company, CancellationToken token) =>
             service.DelayResult ? null : await service.QueryAsync(queries[id]);
+        public Task<CursorPage<ExtractionAttemptSummary>?> AttemptsAsync(Guid id, string company, long cursor, int limit, CancellationToken token) =>
+            Task.FromResult<CursorPage<ExtractionAttemptSummary>?>(queries.TryGetValue(id, out var query) && query.CompanyId == company
+                ? new([new(Guid.NewGuid(), 1, DateTimeOffset.UtcNow, null, null, null, DiagnosticsCoverage.NotAvailable)], null) : null);
         public Task<ExtractionSummary?> GetAsync(Guid id, string company, CancellationToken token) => Task.FromResult<ExtractionSummary?>(null);
         public Task<CursorPage<JsonElement>?> DocumentsAsync(Guid id, string company, long cursor, int limit, CancellationToken token) => Task.FromResult<CursorPage<JsonElement>?>(null);
         public Task<JsonElement?> DocumentAsync(Guid id, string company, long doc, CancellationToken token) => Task.FromResult<JsonElement?>(null);
