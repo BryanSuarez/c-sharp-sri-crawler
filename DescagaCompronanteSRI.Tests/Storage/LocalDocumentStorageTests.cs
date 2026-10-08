@@ -1,4 +1,6 @@
 using System.Text;
+using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
 using DescagaCompronanteSRI.Models.Enums;
 using DescagaCompronanteSRI.Models.Extraction;
 using DescagaCompronanteSRI.Models.Storage;
@@ -8,6 +10,27 @@ namespace DescagaCompronanteSRI.Tests.Storage;
 
 public class LocalDocumentStorageTests
 {
+    [Fact]
+    public async Task WorkerHostWithoutWebEnvironment_CanSaveAndReadDocuments()
+    {
+        using var directory = new StorageTestEnvironment();
+        var environment = new Microsoft.Extensions.Hosting.Internal.HostingEnvironment { ContentRootPath = directory.ContentRootPath };
+        var services = new Microsoft.Extensions.DependencyInjection.ServiceCollection();
+        services.AddSingleton<Microsoft.Extensions.Hosting.IHostEnvironment>(environment);
+        services.AddSingleton<Microsoft.Extensions.Configuration.IConfiguration>(
+            new Microsoft.Extensions.Configuration.ConfigurationBuilder().AddInMemoryCollection(StorageTestSupport.Configuration("Local")).Build());
+        services.AddDocumentStorage();
+        using var provider = services.BuildServiceProvider();
+        using var scope = provider.CreateScope();
+        var storage = scope.ServiceProvider.GetRequiredService<DescagaCompronanteSRI.Contracts.IDocumentStorage>();
+        await using var content = new DocumentContent(new MemoryStream("worker XML"u8.ToArray()), DownloadFormat.Xml);
+        var reference = await storage.SaveAsync(StorageTestSupport.Context, content);
+        Assert.StartsWith(Path.Combine(environment.ContentRootPath, "wwwroot", "documents"), reference.LocalPath);
+        await using var read = await storage.OpenReadAsync(reference);
+        using var reader = new StreamReader(read);
+        Assert.Equal("worker XML", await reader.ReadToEndAsync());
+    }
+
     [Theory]
     [InlineData(DownloadFormat.Xml, ".xml")]
     [InlineData(DownloadFormat.Pdf, ".pdf")]

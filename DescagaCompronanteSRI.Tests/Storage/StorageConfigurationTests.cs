@@ -175,6 +175,7 @@ public class StorageConfigurationTests
         var services = new ServiceCollection();
         services.AddSingleton<IConfiguration>(new ConfigurationBuilder().AddInMemoryCollection(StorageTestSupport.Configuration(name)).Build());
         services.AddSingleton<Microsoft.AspNetCore.Hosting.IWebHostEnvironment>(environment);
+        services.AddSingleton<Microsoft.Extensions.Hosting.IHostEnvironment>(environment);
         services.AddLogging();
         services.AddDocumentStorage();
         using var provider = services.BuildServiceProvider();

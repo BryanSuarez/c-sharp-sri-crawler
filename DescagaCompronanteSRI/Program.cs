@@ -1,3 +1,7 @@
+using DescagaCompronanteSRI.Jobs;
+using DescagaCompronanteSRI.Persistence;
+using Microsoft.EntityFrameworkCore;
+using Hangfire;
 using Microsoft.Extensions.FileProviders;
 using Microsoft.OpenApi.Models;
 using DescagaCompronanteSRI.Contracts;
@@ -15,6 +19,7 @@ var builder = WebApplication.CreateBuilder(new WebApplicationOptions
 });
 
 StorageConfiguration.AddStorageEnvironmentFile(builder.Configuration, builder.Environment);
+JobRegistration.AddJobEnvironmentFile(builder.Configuration, builder.Environment);
 
 builder.WebHost.ConfigureKestrel(options =>
 {
@@ -37,21 +42,8 @@ builder.Services.AddControllers();
 builder.Services.AddEndpointsApiExplorer();
 
 
-builder.Services.AddSingleton<IPlaywrightSessionFactory, PlaywrightSessionFactory>();
-builder.Services.AddScoped<ISriLoginService, SriLoginService>();
-builder.Services.AddScoped<ISriPortalSessionService, SriPortalSessionService>();
-builder.Services.AddScoped<IPdfDownloadService, PdfDownloadService>();
-
-builder.Services.AddScoped<IReceivedDocumentsSessionFactory, ReceivedDocumentsSessionFactory>();
-builder.Services.AddOptions<ReceivedDocumentsPaginationOptions>()
-    .BindConfiguration("ReceivedDocumentsPagination").ValidateDataAnnotations().ValidateOnStart();
-builder.Services.AddScoped<IReceivedDocumentsPage, ReceivedDocumentsPage>();
-builder.Services.AddScoped<IDocumentParser, DocumentParser>();
-builder.Services.AddScoped<IDocumentDownloadStrategy, XmlDocumentDownloadStrategy>();
-builder.Services.AddScoped<IDocumentDownloadStrategy, PdfDocumentDownloadStrategy>();
-builder.Services.AddScoped<IDocumentDownloader, DocumentDownloader>();
-builder.Services.AddDocumentStorage();
-builder.Services.AddScoped<IReceivedDocumentsService, ReceivedDocumentsService>();
+builder.Services.AddReceivedCrawler();
+builder.Services.AddExtractionJobs(builder.Configuration);
 
 builder.Services.AddScoped<IIssuedDocumentsService, ConsultaComprobantesEmitidosService>();
 
@@ -59,6 +51,9 @@ builder.Services.AddScoped<IIssuedDocumentsService, ConsultaComprobantesEmitidos
 
 builder.Services.AddSwaggerGen(c =>
 {
+    c.MapType<ExecutionMode>(() => EnumSchema<ExecutionMode>());
+    c.MapType<JobStatus>(() => EnumSchema<JobStatus>());
+    c.MapType<ExtractionStage>(() => EnumSchema<ExtractionStage>());
     c.MapType<StorageProvider>(() => EnumSchema<StorageProvider>());
     c.MapType<DocumentType>(() => EnumSchema<DocumentType>());
     c.MapType<DownloadFormat>(() => EnumSchema<DownloadFormat>());
@@ -94,10 +89,21 @@ builder.Services.AddHttpClient("sri", c =>
 });
 
 var app = builder.Build();
+if (args.Contains("--migrate"))
+{
+    using var scope = app.Services.CreateScope();
+    await scope.ServiceProvider.GetRequiredService<CrawlerDbContext>().Database.MigrateAsync();
+    return;
+}
+if (app.Services.GetRequiredService<Microsoft.Extensions.Options.IOptions<ExtractionJobOptions>>().Value.DashboardEnabled)
+    app.UseHangfireDashboard("/hangfire");
+app.MapGet("/health", async (CrawlerDbContext db, CancellationToken token) =>
+    await db.Database.CanConnectAsync(token) ? Results.Ok(new { status = "ready" }) : Results.StatusCode(503));
 
 app.UseSwagger();
 app.UseSwaggerUI();
 
+Directory.CreateDirectory(Path.Combine(builder.Environment.ContentRootPath, "wwwroot"));
 var fileProvider = new PhysicalFileProvider(
     Path.Combine(builder.Environment.ContentRootPath, "wwwroot")
 );
