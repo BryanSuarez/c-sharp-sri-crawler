@@ -61,3 +61,6 @@
 #*.PDF   diff=astextplain
 #*.rtf   diff=astextplain
 #*.RTF   diff=astextplain
+
+# Preserve the exact bytes and provenance hashes of bundled official schemas.
+/SriCrawler.Core/Validation/Schemas/*.xsd -text
