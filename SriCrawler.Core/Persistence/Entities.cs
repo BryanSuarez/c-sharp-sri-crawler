@@ -54,6 +54,10 @@ public sealed class DocumentFile
     public int Month { get; set; }
     public string StorageJson { get; set; } = "{}";
     public string? LocalPath { get; set; }
+    public string ValidationJson { get; set; } = "{}";
+    public string? Sha256 { get; set; }
+    public long? SizeBytes { get; set; }
+    public DocumentValidationStatus ValidationStatus { get; set; }
 }
 public sealed class DocumentConversion
 {
@@ -79,6 +83,17 @@ public sealed class ExtractionDocument
     public long? ConversionId { get; set; }
     public DocumentDownloadStatus DownloadStatus { get; set; }
     public DocumentParseStatus JsonStatus { get; set; }
+    public DocumentValidationStatus ValidationStatus { get; set; }
+    public DocumentStorageStatus StorageStatus { get; set; }
+    public MetadataParseStatus MetadataParseStatus { get; set; }
+    public string ValidationJson { get; set; } = "{}";
+    public string? FileHash { get; set; }
+    public string? SourceValuesJson { get; set; }
+    public decimal? Amount { get; set; }
+    public decimal? Taxes { get; set; }
+    public decimal? Total { get; set; }
+    public DateOnly? IssuedDate { get; set; }
+    public DateTimeOffset? AuthorizedAt { get; set; }
     public string ResponseJson { get; set; } = "{}";
 }
 public sealed class ExtractionFailure

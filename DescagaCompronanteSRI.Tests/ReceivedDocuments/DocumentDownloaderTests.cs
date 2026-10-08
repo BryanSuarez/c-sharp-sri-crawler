@@ -39,7 +39,7 @@ public class DocumentDownloaderTests
         public DownloadFormat Format => format;
         public int Calls { get; private set; }
         public Task<OperationResult<DocumentContent>> DownloadAsync(
-            IReceivedDocumentsSession session, ReceivedDocumentReference document)
+            IReceivedDocumentsSession session, ReceivedDocumentReference document, CancellationToken token = default)
         {
             Calls++;
             return Task.FromResult(OperationResult<DocumentContent>.Success(new(new MemoryStream(), Format)));

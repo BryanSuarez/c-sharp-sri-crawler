@@ -23,11 +23,13 @@ public sealed class CrawlerDbContext(DbContextOptions<CrawlerDbContext> options)
         model.Entity<DocumentRecord>().ToTable("documents");
         model.Entity<DocumentRecord>().HasIndex(d => new { d.CompanyId, d.TaxpayerId, d.Direction, d.DocumentType, d.AccessKey }).IsUnique();
         model.Entity<DocumentFile>().ToTable("files");
+        model.Entity<DocumentFile>().Property(x => x.ValidationJson).HasDefaultValue("{}");
         model.Entity<DocumentFile>().HasIndex(d => new { d.DocumentId, d.Format, d.Year, d.Month }).IsUnique();
         model.Entity<DocumentFile>().HasIndex(d => new { d.Year, d.Month });
         model.Entity<DocumentConversion>().ToTable("conversions");
         model.Entity<DocumentConversion>().HasIndex(d => new { d.DocumentId, d.XmlHash, d.ParserVersion });
         model.Entity<ExtractionDocument>().ToTable("results");
+        model.Entity<ExtractionDocument>().Property(x => x.ValidationJson).HasDefaultValue("{}");
         model.Entity<ExtractionDocument>().HasIndex(d => new { d.ExtractionId, d.Identity }).IsUnique();
         model.Entity<ExtractionFailure>().ToTable("failures");
         model.Entity<ExtractionFailure>().HasIndex(d => new { d.ExtractionId, d.Id });

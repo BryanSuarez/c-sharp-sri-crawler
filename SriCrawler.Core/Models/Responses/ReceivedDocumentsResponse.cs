@@ -16,6 +16,10 @@ public sealed class ReceivedDocumentsResponse
     public int DiscoveredCount => AccumulateDocuments ? Documents.Count : ProcessedCount;
     public PaginationProgress Pagination { get; } = new();
     public int DownloadedCount => AccumulateDocuments ? Documents.Count(d => d.DownloadStatus == DocumentDownloadStatus.Downloaded) : SavedCount;
+    [JsonIgnore] public int ValidationIssues { get; set; }
+    [JsonIgnore] public int MetadataIssues { get; set; }
+    public int ValidationIssueCount => AccumulateDocuments ? Documents.Count(d => d.Validation.Status is DocumentValidationStatus.Invalid or DocumentValidationStatus.Unsupported or DocumentValidationStatus.Failed) : ValidationIssues;
+    public int MetadataIssueCount => AccumulateDocuments ? Documents.Count(d => d.MetadataParseStatus is MetadataParseStatus.Partial or MetadataParseStatus.Failed) : MetadataIssues;
     public int FailedCount => DiscoveredCount - DownloadedCount;
     public List<ReceivedDocumentResponse> Documents { get; } = [];
     public List<ExtractionError> Errors { get; } = [];

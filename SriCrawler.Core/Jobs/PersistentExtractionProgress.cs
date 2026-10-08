@@ -1,4 +1,4 @@
-using System.Security.Cryptography;
+using DescagaCompronanteSRI.Validation;
 using System.Text.Json;
 using DescagaCompronanteSRI.Contracts;
 using DescagaCompronanteSRI.Models.Dtos;
@@ -12,7 +12,7 @@ namespace DescagaCompronanteSRI.Jobs;
 
 public sealed class PersistentExtractionProgress(IDbContextFactory<CrawlerDbContext> factory,
     ISriDocumentJsonParser parser, IDocumentStorage storage, Guid extractionId, Guid attemptId,
-    ReceivedDocumentsQuery query) : IExtractionProgress
+    ReceivedDocumentsQuery query, IDocumentValidator validator, Microsoft.Extensions.Options.IOptions<DocumentValidationOptions> validationOptions) : IExtractionProgress
 {
     public async Task StageAsync(ExtractionStage stage, CancellationToken token)
     {
@@ -27,36 +27,62 @@ public sealed class PersistentExtractionProgress(IDbContextFactory<CrawlerDbCont
         var saved = await db.Results.SingleOrDefaultAsync(x => x.ExtractionId == extractionId && x.Identity == key &&
             x.DownloadStatus == DocumentDownloadStatus.Downloaded, token);
         if (saved is null) return null;
-        saved.SeenAttemptId = attemptId;
-        var document = ExtractionJobs.Deserialize<ReceivedDocumentResponse>(saved.ResponseJson);
-        document = CopyLocation(document, page, row);
-        saved.ResponseJson = ExtractionJobs.Serialize(document);
-        await db.SaveChangesAsync(token);
-        // Retry conversion independently from the SRI download after an interrupted attempt.
-        if (document.DownloadFormat == DownloadFormat.Xml && saved.JsonStatus == DocumentParseStatus.Failed && document.Storage is not null)
+        var document = CopyLocation(ExtractionJobs.Deserialize<ReceivedDocumentResponse>(saved.ResponseJson), page, row);
+        var file = saved.FileId is null ? null : await db.Files.SingleOrDefaultAsync(x => x.Id == saved.FileId, token);
+        var requiresValidation = file is null || file.ValidationStatus != DocumentValidationStatus.Valid ||
+            string.IsNullOrWhiteSpace(document.Validation.Sha256) || document.Validation.Status != DocumentValidationStatus.Valid ||
+            document.Validation.ValidatorVersion != validator.Version || document.Validation.Sha256 != file?.Sha256;
+        var requiresConversion = document.DownloadFormat == DownloadFormat.Xml && saved.JsonStatus == DocumentParseStatus.Failed;
+        if (document.Storage is null) return null;
+        if (requiresValidation || requiresConversion)
         {
-            var reference = document.Storage with { LocalPath = document.FilePath };
-            await using var stream = await storage.OpenReadAsync(reference, token);
-            using var memory = new MemoryStream();
-            await stream.CopyToAsync(memory, token);
-            document.XmlHash = Convert.ToHexString(SHA256.HashData(memory.ToArray()));
-            memory.Position = 0;
-            using var reader = new StreamReader(memory);
-            document.SourceXml = await reader.ReadToEndAsync(token);
-            await SaveAsync(document, token);
+            try
+            {
+                var reference = document.Storage with { LocalPath = document.FilePath };
+                await using var stream = await storage.OpenReadAsync(reference, token);
+                var limit = document.DownloadFormat == DownloadFormat.Xml ? validationOptions.Value.MaxXmlBytes : validationOptions.Value.MaxPdfBytes;
+                var memory = new MemoryStream();
+                await using var content = new DocumentContent(memory, document.DownloadFormat);
+                await BoundedDocumentStream.CopyAsync(stream, memory, limit, token);
+                memory.Position = 0;
+                // Conversion retries read the file again, so bind fresh validation to those bytes.
+                document.Validation = await validator.ValidateAsync(content, query.DocumentType, key, token);
+                if (document.Validation.Status != DocumentValidationStatus.Valid) return null;
+                document.StorageStatus = DocumentStorageStatus.Stored;
+                document.XmlHash = document.Validation.Sha256;
+                if (requiresConversion)
+                {
+                    using var reader = new StreamReader(memory, leaveOpen: true);
+                    document.SourceXml = await reader.ReadToEndAsync(token);
+                    await SaveAsync(document, token);
+                }
+            }
+            catch (IOException) { return null; }
         }
+        saved.SeenAttemptId = attemptId;
+        saved.ValidationStatus = document.Validation.Status;
+        saved.StorageStatus = document.StorageStatus;
+        saved.ValidationJson = ExtractionJobs.Serialize(document.Validation);
+        saved.FileHash = document.Validation.Sha256;
+        saved.ResponseJson = ExtractionJobs.Serialize(document);
+        if (file is not null && (requiresValidation || requiresConversion)) SetFileValidation(file, document.Validation);
+        await db.SaveChangesAsync(token);
         return document;
     }
     private static ReceivedDocumentResponse CopyLocation(ReceivedDocumentResponse source, int page, int row)
     {
         var copy = new ReceivedDocumentResponse { PageNumber = page, RowIndex = row, Metadata = source.Metadata,
             DownloadFormat = source.DownloadFormat, DownloadStatus = source.DownloadStatus, ParseStatus = source.ParseStatus,
-            Storage = source.Storage, FilePath = source.FilePath, ParsedDocument = source.ParsedDocument };
+            Storage = source.Storage, FilePath = source.FilePath, ParsedDocument = source.ParsedDocument,
+            Validation = source.Validation, StorageStatus = source.StorageStatus };
         copy.Errors.AddRange(source.Errors);
         return copy;
     }
     public async Task SaveAsync(ReceivedDocumentResponse result, CancellationToken token)
     {
+        if (result.DownloadStatus == DocumentDownloadStatus.Downloaded &&
+            (result.Validation.Status != DocumentValidationStatus.Valid || result.StorageStatus != DocumentStorageStatus.Stored || result.Storage is null))
+            throw new InvalidOperationException("A downloaded document requires validation and confirmed storage.");
         var key = result.Metadata?.AuthorizationNumber;
         var valid = key is { Length: 49 } && key.All(char.IsAsciiDigit);
         var identity = valid ? key! : $"row:{attemptId}:{result.PageNumber}:{result.RowIndex}";
@@ -94,6 +120,7 @@ public sealed class PersistentExtractionProgress(IDbContextFactory<CrawlerDbCont
                 if (file is null) { file = new() { DocumentId = document.Id, Format = result.DownloadFormat, Year = query.Year, Month = query.Month }; db.Files.Add(file); }
                 file.StorageJson = ExtractionJobs.Serialize(result.Storage);
                 file.LocalPath = result.FilePath;
+                SetFileValidation(file, result.Validation);
             }
             if (result.DownloadFormat == DownloadFormat.Xml && result.DownloadStatus == DocumentDownloadStatus.Downloaded)
             {
@@ -112,6 +139,15 @@ public sealed class PersistentExtractionProgress(IDbContextFactory<CrawlerDbCont
         row.ConversionId = version?.Id;
         row.DownloadStatus = result.DownloadStatus;
         row.JsonStatus = conversion.Status;
+        row.ValidationStatus = result.Validation.Status;
+        row.StorageStatus = result.StorageStatus;
+        row.MetadataParseStatus = result.MetadataParseStatus;
+        row.ValidationJson = ExtractionJobs.Serialize(result.Validation);
+        row.FileHash = result.Validation.Sha256;
+        row.SourceValuesJson = result.Metadata?.SourceValues is { } values ? ExtractionJobs.Serialize(values) : null;
+        row.Amount = result.Metadata?.Amount; row.Taxes = result.Metadata?.Taxes; row.Total = result.Metadata?.Total;
+        row.IssuedDate = result.Metadata?.IssuedDate;
+        row.AuthorizedAt = result.Metadata?.AuthorizedAtIso?.ToUniversalTime();
         row.ResponseJson = ExtractionJobs.Serialize(result);
         foreach (var error in result.Errors)
             db.Failures.Add(new() { ExtractionId = extractionId, AttemptId = attemptId, CreatedAt = DateTimeOffset.UtcNow, ErrorJson = ExtractionJobs.Serialize(error) });
@@ -121,6 +157,13 @@ public sealed class PersistentExtractionProgress(IDbContextFactory<CrawlerDbCont
         job.LastActivityAt = DateTimeOffset.UtcNow;
         await db.SaveChangesAsync(token);
         await transaction.CommitAsync(token);
+    }
+    private static void SetFileValidation(DocumentFile file, DocumentValidationResult validation)
+    {
+        file.ValidationJson = ExtractionJobs.Serialize(validation);
+        file.ValidationStatus = validation.Status;
+        file.Sha256 = validation.Sha256;
+        file.SizeBytes = validation.SizeBytes;
     }
     public async Task CheckpointAsync(ReceivedDocumentsResponse response, CancellationToken token)
     {

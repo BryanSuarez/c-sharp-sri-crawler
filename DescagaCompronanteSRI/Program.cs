@@ -60,6 +60,10 @@ builder.Services.AddSwaggerGen(c =>
     c.MapType<PaginationStatus>(() => EnumSchema<PaginationStatus>());
     c.MapType<ExtractionStatus>(() => EnumSchema<ExtractionStatus>());
     c.MapType<DocumentDownloadStatus>(() => EnumSchema<DocumentDownloadStatus>());
+    c.MapType<DocumentValidationStatus>(() => EnumSchema<DocumentValidationStatus>());
+    c.MapType<DocumentIdentityStatus>(() => EnumSchema<DocumentIdentityStatus>());
+    c.MapType<DocumentStorageStatus>(() => EnumSchema<DocumentStorageStatus>());
+    c.MapType<MetadataParseStatus>(() => EnumSchema<MetadataParseStatus>());
     c.MapType<DocumentParseStatus>(() => EnumSchema<DocumentParseStatus>());
     c.MapType<ExtractionErrorCode>(() => EnumSchema<ExtractionErrorCode>());
     c.SwaggerDoc("v1", new OpenApiInfo { Title = "Descarga de Comprobantes", Version = "v1" });

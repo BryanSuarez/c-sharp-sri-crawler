@@ -1,4 +1,6 @@
 using DescagaCompronanteSRI.Contracts;
+using DescagaCompronanteSRI.Validation;
+using DescagaCompronanteSRI.Services.Parsing;
 using DescagaCompronanteSRI.Persistence;
 using DescagaCompronanteSRI.Services;
 using DescagaCompronanteSRI.Services.ReceivedDocuments;
@@ -22,7 +24,7 @@ public static class JobRegistration
         if (path is null) return;
         try
         {
-            var values = DotNetEnv.Env.NoEnvVars().Load(path).Where(x => x.Key.StartsWith("ExtractionJobs__", StringComparison.Ordinal))
+            var values = DotNetEnv.Env.NoEnvVars().Load(path).Where(x => x.Key.StartsWith("ExtractionJobs__", StringComparison.Ordinal) || x.Key.StartsWith("DocumentValidation__", StringComparison.Ordinal))
                 .ToDictionary(x => x.Key.Replace("__", ":"), x => (string?)x.Value);
             var index = config.Sources.Select((s, i) => (s, i)).Where(x => x.s is Microsoft.Extensions.Configuration.Json.JsonConfigurationSource)
                 .Select(x => x.i).DefaultIfEmpty(-1).Max();
@@ -46,6 +48,13 @@ public static class JobRegistration
             client.BaseAddress = new Uri(provider.GetRequiredService<IOptions<ExtractionJobOptions>>().Value.ParserUrl.TrimEnd('/') + "/");
             client.Timeout = Timeout.InfiniteTimeSpan;
         });
+        services.AddOptions<DocumentValidationOptions>().BindConfiguration("DocumentValidation").ValidateDataAnnotations()
+            .Validate(o => DocumentValidationOptions.IsTimeZoneValid(o.PortalTimeZone), "DocumentValidation PortalTimeZone is invalid.").ValidateOnStart();
+        services.AddSingleton<SriSchemaCatalog>();
+        services.AddScoped<ReceivedDocumentMetadataParser>();
+        services.AddScoped<IDocumentFormatValidator, XmlDocumentValidator>();
+        services.AddScoped<IDocumentFormatValidator, PdfDocumentValidator>();
+        services.AddScoped<IDocumentValidator, DocumentValidator>();
         services.AddScoped<DocumentReprocessor>();
         services.AddHangfire((provider, config) => config.UseSimpleAssemblyNameTypeSerializer().UseRecommendedSerializerSettings()
             .UsePostgreSqlStorage(c => c.UseNpgsqlConnection(provider.GetRequiredService<IOptions<ExtractionJobOptions>>().Value.ConnectionString),

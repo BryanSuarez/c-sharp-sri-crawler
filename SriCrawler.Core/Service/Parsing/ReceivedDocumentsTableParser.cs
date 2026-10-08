@@ -1,11 +1,12 @@
-using System.Globalization;
+using DescagaCompronanteSRI.Validation;
+using Microsoft.Extensions.Options;
 using DescagaCompronanteSRI.Models.Extraction;
 using HtmlAgilityPack;
 namespace DescagaCompronanteSRI.Services.Parsing;
 
 public static class ReceivedDocumentsTableParser
 {
-    public static ReceivedDocumentReference? ParseRow(string rowHtml)
+    public static ReceivedDocumentReference? ParseRow(string rowHtml, ReceivedDocumentMetadataParser? parser = null)
     {
         var document = new HtmlDocument();
         document.LoadHtml(rowHtml);
@@ -17,13 +18,13 @@ public static class ReceivedDocumentsTableParser
             SupplierBusinessName = Text(cells[1]),
             DocumentTypeName = Text(cells[2]),
             AuthorizationNumber = Text(cells[3]),
-            IssuedAt = Text(cells[4]),
-            AuthorizedAt = Text(cells[5]),
-            Amount = DecimalValue(Text(cells[6])),
-            Taxes = DecimalValue(Text(cells[7])),
-            Total = DecimalValue(Text(cells[8])),
+            // The portal places authorization timestamp before issue date.
+            IssuedAt = Text(cells[5]),
+            AuthorizedAt = Text(cells[4]),
             RelatedDocuments = cells.Count > 11 ? Attribute(cells[11].SelectSingleNode(".//a[@href]"), "href") : ""
         };
+        parser ??= new(Options.Create(new DocumentValidationOptions()));
+        metadata = parser.Parse(metadata, new(Text(cells[6]), Text(cells[7]), Text(cells[8]), Text(cells[5]), Text(cells[4])));
         return new(metadata,
             Attribute(cells[9].SelectSingleNode(".//a[@id]"), "id"),
             Attribute(cells[10].SelectSingleNode(".//a[@id]"), "id"),
@@ -34,12 +35,4 @@ public static class ReceivedDocumentsTableParser
     private static string Attribute(HtmlNode? node, string name) =>
         HtmlEntity.DeEntitize(node?.GetAttributeValue(name, "") ?? "").Trim();
 
-    private static decimal DecimalValue(string value)
-    {
-        // Locale handling is intentionally preserved for this structural refactor.
-        if (decimal.TryParse(value, NumberStyles.Any, CultureInfo.CurrentCulture, out var currentCultureValue))
-            return currentCultureValue;
-        return decimal.TryParse(value.Replace(",", "."), NumberStyles.Any, CultureInfo.InvariantCulture, out var invariantValue)
-            ? invariantValue : 0;
-    }
 }

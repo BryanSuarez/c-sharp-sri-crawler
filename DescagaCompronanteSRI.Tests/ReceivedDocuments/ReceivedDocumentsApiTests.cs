@@ -51,6 +51,13 @@ public sealed class ReceivedDocumentsApiTests : IClassFixture<ReceivedDocumentsA
         Assert.Equal(1, document.GetProperty("pageNumber").GetInt32());
         Assert.Equal("xml", document.GetProperty("downloadFormat").GetString());
         Assert.Equal("downloaded", document.GetProperty("downloadStatus").GetString());
+        Assert.Equal("valid", document.GetProperty("validation").GetProperty("status").GetString());
+        Assert.Equal("stored", document.GetProperty("storageStatus").GetString());
+        Assert.Equal("partial", document.GetProperty("metadataParseStatus").GetString());
+        Assert.Equal(JsonValueKind.Null, document.GetProperty("metadata").GetProperty("amount").ValueKind);
+        Assert.Equal("2026-06-01", document.GetProperty("metadata").GetProperty("issuedDate").GetString());
+        Assert.EndsWith("-05:00", document.GetProperty("metadata").GetProperty("authorizedAtIso").GetString());
+        Assert.Equal(1, body.GetProperty("metadataIssueCount").GetInt32());
         Assert.Equal("parsed", document.GetProperty("parseStatus").GetString());
         Assert.Equal("s3", document.GetProperty("storage").GetProperty("provider").GetString());
         Assert.Equal("test-bucket", document.GetProperty("storage").GetProperty("bucket").GetString());
@@ -339,7 +346,10 @@ public sealed class ReceivedDocumentsApiTests : IClassFixture<ReceivedDocumentsA
             if (QuerySucceeded)
                 result.Documents.Add(new()
                 {
-                    Metadata = new() { AuthorizationNumber = new string('1', 49) },
+                    Metadata = new() { AuthorizationNumber = new string('1', 49), Amount = null, IssuedDate = new DateOnly(2026, 6, 1),
+                        AuthorizedAtIso = new DateTimeOffset(2026, 6, 1, 10, 30, 0, TimeSpan.FromHours(-5)), MetadataParseStatus = MetadataParseStatus.Partial },
+                    StorageStatus = DocumentStorageStatus.Stored,
+                    Validation = new() { Status = DocumentValidationStatus.Valid, IdentityStatus = DocumentIdentityStatus.Verified, ValidatorVersion = "1", Sha256 = "fixture" },
                     DownloadFormat = query.DownloadFormat, DownloadStatus = DocumentDownloadStatus.Downloaded,
                     Storage = new DocumentStorageReference(StorageProvider.S3, "test-bucket",
                         "acme/1790012345001/2026/06/received/invoice/" + new string('1', 49) + ".xml"),

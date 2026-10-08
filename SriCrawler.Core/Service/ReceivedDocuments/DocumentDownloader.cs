@@ -10,9 +10,9 @@ public sealed class DocumentDownloader(IEnumerable<IDocumentDownloadStrategy> st
         strategies.ToDictionary(strategy => strategy.Format);
 
     public Task<OperationResult<DocumentContent>> DownloadAsync(
-        IReceivedDocumentsSession session, ReceivedDocumentReference document, DownloadFormat format) =>
+        IReceivedDocumentsSession session, ReceivedDocumentReference document, DownloadFormat format, CancellationToken token = default) =>
         _strategies.TryGetValue(format, out var strategy)
-            ? strategy.DownloadAsync(session, document)
+            ? strategy.DownloadAsync(session, document, token)
             : Task.FromResult(OperationResult<DocumentContent>.Failure(
                 ExtractionErrorCode.DownloadFailed, "Unsupported download format."));
 }

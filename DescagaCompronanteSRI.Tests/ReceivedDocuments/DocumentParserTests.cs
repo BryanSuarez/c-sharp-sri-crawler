@@ -24,10 +24,11 @@ public class DocumentParserTests
     }
 
     [Fact]
-    public void ExtractXml_KeepsExistingRawFallback()
+    public void ExtractXml_RejectsPortalHtmlAndUnsafeContent()
     {
         const string raw = "<html>Portal error</html>";
-        Assert.Equal(raw, new DocumentParser().ExtractXml(raw).Value);
+        Assert.False(new DocumentParser().ExtractXml(raw).IsSuccess);
+        Assert.False(new DocumentParser().ExtractXml("<!DOCTYPE factura><factura/>").IsSuccess);
         Assert.False(new DocumentParser().ExtractXml("not XML").IsSuccess);
         Assert.False(new DocumentParser().ExtractXml("").IsSuccess);
     }

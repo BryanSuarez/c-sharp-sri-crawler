@@ -42,12 +42,17 @@ Content-Type: application/json
 }
 
 ### Status and summary
+# Inspect validationIssueCount and metadataIssueCount separately from failedCount.
 GET {{HostAddress}}/api/received-documents/extractions/{{ExtractionId}}?companyId={{CompanyId}}
 
 ### Paginated document results (payload excluded)
+# Each item includes validation, storageStatus and metadataParseStatus.
+# Metadata amounts can be null; issuedDate/authorizedAtIso accompany the original dates.
 GET {{HostAddress}}/api/received-documents/extractions/{{ExtractionId}}/documents?companyId={{CompanyId}}&limit=100
 
 ### Document detail with versioned JSON
+# validation includes status, identityStatus, validatorVersion, checks, sizeBytes and sha256.
+# Rejected files have storageStatus=notAttempted; parsing errors do not invalidate saved files.
 GET {{HostAddress}}/api/received-documents/extractions/{{ExtractionId}}/documents/{{DocumentId}}?companyId={{CompanyId}}
 
 ### Paginated errors

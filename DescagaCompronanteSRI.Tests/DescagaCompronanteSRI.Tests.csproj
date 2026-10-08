@@ -21,6 +21,7 @@
 
   <ItemGroup>
     <Content Include="Fixtures\*.html" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="Fixtures\Validation\*" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
   <ItemGroup>

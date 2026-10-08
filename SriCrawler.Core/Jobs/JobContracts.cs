@@ -37,7 +37,8 @@ public sealed record ExtractionSummary(Guid ExtractionId, string CompanyId, stri
     JobStatus JobStatus, ExtractionStatus? ExtractionStatus, ExtractionStage Stage, int Attempts,
     DateTimeOffset CreatedAt, DateTimeOffset? StartedAt, DateTimeOffset? FinishedAt,
     DateTimeOffset? LastActivityAt, int DiscoveredCount, int DownloadedCount, int FailedCount,
-    int ConversionFailedCount, int ConversionUnsupportedCount, PaginationProgress Pagination);
+    int ConversionFailedCount, int ConversionUnsupportedCount, PaginationProgress Pagination,
+    int ValidationIssueCount = 0, int MetadataIssueCount = 0);
 public sealed record JsonConversion(DocumentParseStatus Status, JsonElement? DocumentJson = null,
     string? ParserName = null, string? ParserVersion = null, string? ErrorCode = null)
 {

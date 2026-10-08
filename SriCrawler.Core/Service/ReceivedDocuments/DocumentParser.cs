@@ -16,24 +16,14 @@ public sealed class DocumentParser : IDocumentParser
 {
     public OperationResult<string> ExtractXml(string response)
     {
-        string xml = "";
         try
         {
-            var element = XDocument.Parse(response).Descendants("comprobante").FirstOrDefault();
-            if (element is not null)
-            {
-                var cdata = element.DescendantNodes().OfType<XCData>().FirstOrDefault();
-                xml = cdata?.Value
-                    ?? (element.Value.TrimStart().StartsWith("<") ? element.Value
-                        : element.Elements().FirstOrDefault()?.ToString() ?? "");
-            }
+            return OperationResult<string>.Success(DescagaCompronanteSRI.Validation.SafeSriXml.Extract(response));
         }
-        catch (System.Xml.XmlException) { /* Preserve the existing raw-content fallback. */ }
-
-        if (string.IsNullOrWhiteSpace(xml) && response.TrimStart().StartsWith("<")) xml = response;
-        return string.IsNullOrWhiteSpace(xml)
-            ? OperationResult<string>.Failure(ExtractionErrorCode.DownloadFailed, "Response does not contain XML content.")
-            : OperationResult<string>.Success(xml);
+        catch (System.Xml.XmlException)
+        {
+            return OperationResult<string>.Failure(ExtractionErrorCode.InvalidDocument, "Response does not contain a safe SRI receipt.");
+        }
     }
 
     public async Task<DocumentParseResult> ParseAsync(DocumentContent content, DocumentType documentType)
@@ -59,7 +49,8 @@ public sealed class DocumentParser : IDocumentParser
             using var reader = new StreamReader(content.Stream, Encoding.UTF8, detectEncodingFromByteOrderMarks: true, leaveOpen: true);
             var xml = await reader.ReadToEndAsync();
             using var textReader = new StringReader(xml);
-            var document = new XmlSerializer(type).Deserialize(textReader);
+            using var xmlReader = System.Xml.XmlReader.Create(textReader, DescagaCompronanteSRI.Validation.SafeSriXml.Settings());
+            var document = new XmlSerializer(type).Deserialize(xmlReader);
             return new(DocumentParseStatus.Parsed, document);
         }
         catch (InvalidOperationException)
