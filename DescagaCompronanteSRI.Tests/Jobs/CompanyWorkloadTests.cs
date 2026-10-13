@@ -116,6 +116,8 @@ public sealed class CompanyWorkloadTests
     public async Task RollingUsage_CountsFailedJobsAndReleasesAtTheExactBoundary()
     {
         await using var f = await Fixture.CreateAsync(); f.Options.MaxAcceptedPerCompany24Hours = 2;
+        // Fixed whole-second timestamps preserve exact equality at PostgreSQL's microsecond precision.
+        f.Clock.Now = new DateTimeOffset(2026, 1, 1, 12, 0, 0, TimeSpan.Zero);
         var start = f.Clock.Now;
         var first = await f.Accept(Query()); await f.Finish(first.ExtractionId, JobStatus.Failed);
         f.Clock.Now = start.AddHours(1);
