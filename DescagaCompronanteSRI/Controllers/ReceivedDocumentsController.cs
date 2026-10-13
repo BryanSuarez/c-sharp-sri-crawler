@@ -53,7 +53,7 @@ public sealed class ReceivedDocumentsController(IExtractionJobs jobs, IOptions<E
                 while (DateTimeOffset.UtcNow < deadline)
                 {
                     var result = await jobs.ResultAsync(accepted.ExtractionId, query.CompanyId, token);
-                    if (result is not null) return result.QuerySucceeded ? Ok(result) : StatusCode(500, result);
+                    if (result is not null) return (result.QuerySucceeded || result.JobStatus == JobStatus.Cancelled) ? Ok(result) : StatusCode(500, result);
                     await Task.Delay(500, token);
                 }
             }
@@ -62,6 +62,28 @@ public sealed class ReceivedDocumentsController(IExtractionJobs jobs, IOptions<E
         }
         catch (IdempotencyConflictException) { return Conflict(new { code = "idempotencyConflict", message = "clientRequestId was already used with different parameters." }); }
         catch (WorkloadLimitExceededException e) { return StatusCode(StatusCodes.Status429TooManyRequests, e.Result); }
+        catch (Exception e) when (e is PersistenceUnavailableException or NpgsqlException)
+        { return StatusCode(503, new { code = "persistenceUnavailable", message = "Extraction persistence is temporarily unavailable." }); }
+    }
+    /// <summary>Requests cancellation. Confirmed files remain available; active work returns 202 until cleanup finishes.</summary>
+    [HttpPost("extractions/{id:guid}/cancel")]
+    [ProducesResponseType(typeof(ExtractionCancellation), 200)]
+    [ProducesResponseType(typeof(ExtractionCancellation), 202)]
+    [ProducesResponseType(404)]
+    [ProducesResponseType(409)]
+    [ProducesResponseType(503)]
+    public async Task<IActionResult> Cancel(Guid id, [FromQuery] string companyId, CancellationToken token)
+    {
+        if (!ApiAccess.CanAccess(User, companyId)) return NotFound();
+        var claim = User.FindFirst(System.Security.Claims.ClaimTypes.NameIdentifier)?.Value;
+        Guid? requestedBy = Guid.TryParse(claim, out var keyId) ? keyId : null;
+        try
+        {
+            var result = await jobs.CancelAsync(id, ApiAccess.Company(User, companyId), requestedBy, token);
+            return result is null ? NotFound() : StatusCode(result.JobStatus == JobStatus.Cancelled ? 200 : 202, result);
+        }
+        catch (ExtractionAlreadyFinishedException)
+        { return Conflict(new { code = "extractionAlreadyFinished", message = "The extraction has already finished." }); }
         catch (Exception e) when (e is PersistenceUnavailableException or NpgsqlException)
         { return StatusCode(503, new { code = "persistenceUnavailable", message = "Extraction persistence is temporarily unavailable." }); }
     }

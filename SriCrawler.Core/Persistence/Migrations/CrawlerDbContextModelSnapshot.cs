@@ -393,6 +393,15 @@ namespace DescagaCompronanteSRI.Persistence.Migrations
                         .IsRequired()
                         .HasColumnType("text");
 
+                    b.Property<DateTimeOffset?>("CancellationRequestedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<Guid?>("CancellationRequestedBy")
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTimeOffset?>("CancelledAt")
+                        .HasColumnType("timestamp with time zone");
+
                     b.Property<Guid?>("ClientRequestId")
                         .HasColumnType("uuid");
 
@@ -463,6 +472,10 @@ namespace DescagaCompronanteSRI.Persistence.Migrations
                     b.HasIndex("CompanyId", "JobStatus", "ExpiresAt");
 
                     b.HasIndex("CompanyId", "TaxpayerId", "CreatedAt");
+
+                    b.HasIndex("CancellationRequestedAt", "Id")
+                        .HasDatabaseName("IX_extractions_pending_cancellation")
+                        .HasFilter("\"JobStatus\" = 5");
 
                     b.ToTable("extractions", "crawler");
                 });

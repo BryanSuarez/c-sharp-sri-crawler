@@ -26,6 +26,8 @@ public sealed class CrawlerDbContext(DbContextOptions<CrawlerDbContext> options)
         model.Entity<ExtractionRecord>().HasIndex(e => new { e.CompanyId, e.TaxpayerId, e.CreatedAt });
         model.Entity<ExtractionRecord>().HasIndex(e => new { e.CompanyId, e.CreatedAt });
         model.Entity<ExtractionRecord>().HasIndex(e => new { e.CompanyId, e.JobStatus, e.ExpiresAt });
+        model.Entity<ExtractionRecord>().HasIndex(e => new { e.CancellationRequestedAt, e.Id })
+            .HasDatabaseName("IX_extractions_pending_cancellation").HasFilter("\"JobStatus\" = 5");
         model.Entity<ExtractionAttempt>().ToTable("attempts");
         model.Entity<ExtractionAttempt>().HasIndex(e => new { e.ExtractionId, e.Number }).IsUnique();
         model.Entity<DocumentRecord>().ToTable("documents");

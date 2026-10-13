@@ -631,7 +631,7 @@
                 }
               ]
             },
-            "description": "Send every 5 seconds until completed or failed. Check extractionStatus and pagination independently from jobStatus."
+            "description": "Send every 5 seconds until completed, failed or cancelled. Check extractionStatus and pagination independently from jobStatus. Keep polling cancellationRequested until the worker confirms cancelled."
           },
           "event": [
             {
@@ -1042,6 +1042,68 @@
                 "type": "text/javascript",
                 "exec": [
                   "pm.test(\"Expected HTTP status\", () => pm.expect(pm.response.code).to.be.oneOf([200]));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Cancel selected extraction (200/202/409; optional)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "XApiKey",
+                "value": "{{companyApiKey}}",
+                "type": "text"
+              }
+            ],
+            "auth": {
+              "type": "noauth"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/received-documents/extractions/{{extractionId}}/cancel?companyId={{companyId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "received-documents",
+                "extractions",
+                "{{extractionId}}",
+                "cancel"
+              ],
+              "query": [
+                {
+                  "key": "companyId",
+                  "value": "{{companyId}}"
+                }
+              ]
+            },
+            "description": "Explicitly cancel pending or running work. No body. 200 confirms cancelled; 202 means cleanup is pending; 409 means the extraction already completed/failed. Confirmed files remain available. This request does not start SRI work."
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (!pm.environment.get(\"companyApiKey\")) throw new Error(\"Set companyApiKey in the private environment first.\");",
+                  "if (!pm.environment.get(\"extractionId\")) throw new Error(\"Submit an extraction or set extractionId to an existing extraction first.\");"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Expected cancellation status\", () => pm.expect(pm.response.code).to.be.oneOf([200, 202, 409]));",
+                  "if ([200, 202].includes(pm.response.code)) {",
+                  " const b = pm.response.json();",
+                  " pm.environment.set(\"jobStatus\", b.jobStatus);",
+                  " pm.test(\"Cancellation state\", () => pm.expect(b.jobStatus).to.eql(pm.response.code === 200 ? \"cancelled\" : \"cancellationRequested\"));",
+                  "}"
                 ]
               }
             }

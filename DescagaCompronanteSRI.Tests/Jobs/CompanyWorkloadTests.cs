@@ -329,12 +329,12 @@ public sealed class CompanyWorkloadTests
         Assert.Equal(3, await final.Dispatches.CountAsync(x => x.HangfireJobId != null));
     }
 
-    private sealed class FixedClock : TimeProvider
+    internal sealed class FixedClock : TimeProvider
     {
         public DateTimeOffset Now { get; set; } = DateTimeOffset.UtcNow;
         public override DateTimeOffset GetUtcNow() => Now;
     }
-    private sealed class Queue : IBackgroundJobClient
+    internal sealed class Queue : IBackgroundJobClient
     {
         public ConcurrentQueue<Guid> Ids { get; } = new();
         public bool Fail { get; set; }
@@ -370,7 +370,7 @@ public sealed class CompanyWorkloadTests
             return await base.RunAsync(query, progress, token);
         }
     }
-    private sealed class ScopedActivator(IServiceScopeFactory factory) : JobActivator
+    internal sealed class ScopedActivator(IServiceScopeFactory factory) : JobActivator
     {
         public override JobActivatorScope BeginScope(JobActivatorContext context) => new ScopedActivation(factory.CreateScope());
         private sealed class ScopedActivation(IServiceScope scope) : JobActivatorScope
@@ -386,7 +386,7 @@ public sealed class CompanyWorkloadTests
         public Task<DocumentStorageReference> SaveAsync(DocumentStorageContext context, DocumentContent content, CancellationToken cancellationToken = default) => throw new NotSupportedException();
         public Task<Stream> OpenReadAsync(DocumentStorageReference reference, CancellationToken cancellationToken = default) => throw new NotSupportedException();
     }
-    private sealed class Fixture : IAsyncDisposable
+    internal sealed class Fixture : IAsyncDisposable
     {
         public required string Connection { get; init; }
         public required string Database { get; init; }

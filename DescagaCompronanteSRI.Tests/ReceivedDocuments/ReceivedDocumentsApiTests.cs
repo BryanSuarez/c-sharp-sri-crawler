@@ -315,6 +315,7 @@ public sealed class ReceivedDocumentsApiTests : IClassFixture<ReceivedDocumentsA
 
     public sealed class StubJobs(StubReceivedService service) : IExtractionJobs
     {
+        public Task<ExtractionCancellation?> CancelAsync(Guid id, string companyId, Guid? requestedBy, CancellationToken token) => Task.FromResult<ExtractionCancellation?>(null);
         private readonly Dictionary<Guid, ReceivedDocumentsQuery> queries = [];
         public Task<ExtractionAccepted> AcceptAsync(ReceivedDocumentsQuery query, Guid? requestId, CancellationToken token)
         {

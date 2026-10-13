@@ -38,6 +38,34 @@ public sealed class ExtractionJobs(CrawlerDbContext db, CredentialCipher cipher,
         return result;
     }
 
+    public async Task<ExtractionCancellation?> CancelAsync(Guid id, string companyId, Guid? requestedBy, CancellationToken token)
+    {
+        try
+        {
+            await using var transaction = await db.Database.BeginTransactionAsync(token);
+            var record = await ExtractionLifecycle.LockAsync(db, id, token, companyId);
+            if (record is null) return null;
+            if (record.JobStatus is JobStatus.Completed or JobStatus.Failed) throw new ExtractionAlreadyFinishedException();
+            var changed = record.JobStatus is not (JobStatus.CancellationRequested or JobStatus.Cancelled);
+            if (changed)
+            {
+                var wasRunning = record.JobStatus == JobStatus.Running;
+                record.CancellationRequestedAt = ExtractionLifecycle.Timestamp((clock ?? TimeProvider.System).GetUtcNow());
+                record.CancellationRequestedBy = requestedBy;
+                record.EncryptedPassword = null;
+                record.JobStatus = JobStatus.CancellationRequested;
+                if (!wasRunning) await ExtractionLifecycle.CancelAsync(db, record, record.CancellationRequestedAt.Value, token);
+                else await db.SaveChangesAsync(token);
+            }
+            await transaction.CommitAsync(token);
+            ExtractionDiagnostics.Safely(() => logger?.LogInformation(new EventId(1420, "ExtractionCancellationRequested"),
+                "Cancellation for extraction {extractionId}, company {companyId}: {jobStatus}, repeated {repeated}.",
+                id, companyId, record.JobStatus, !changed));
+            return new(record.Id, record.JobStatus, record.CancellationRequestedAt, record.CancelledAt);
+        }
+        catch (Exception e) when (e is NpgsqlException or DbUpdateException) { throw new PersistenceUnavailableException(); }
+    }
+
     public async Task<ExtractionAccepted> AcceptAsync(ReceivedDocumentsQuery query, Guid? requestId, CancellationToken token)
     {
         var safeQuery = query with { Password = "" };
@@ -133,7 +161,7 @@ public sealed class ExtractionJobs(CrawlerDbContext db, CredentialCipher cipher,
         var saved = counts?.Saved ?? 0;
         return new(e.Id, e.CompanyId, e.TaxpayerId, e.JobStatus, e.ExtractionStatus, e.Stage, e.AttemptCount,
             e.CreatedAt, e.StartedAt, e.FinishedAt, e.LastActivityAt, count, saved, count - saved,
-            counts?.ConversionFailed ?? 0, counts?.Unsupported ?? 0, Deserialize<PaginationProgress>(e.PaginationJson), counts?.ValidationIssues ?? 0, counts?.MetadataIssues ?? 0, saved - (counts?.Reused ?? 0), counts?.Reused ?? 0, await AttemptDiagnosticsStore.SummaryAsync(db, e, token));
+            counts?.ConversionFailed ?? 0, counts?.Unsupported ?? 0, Deserialize<PaginationProgress>(e.PaginationJson), counts?.ValidationIssues ?? 0, counts?.MetadataIssues ?? 0, saved - (counts?.Reused ?? 0), counts?.Reused ?? 0, await AttemptDiagnosticsStore.SummaryAsync(db, e, token), e.CancellationRequestedAt, e.CancelledAt);
     }
     public async Task<CursorPage<ExtractionAttemptSummary>?> AttemptsAsync(Guid id, string companyId, long cursor, int limit, CancellationToken token)
     {
@@ -191,8 +219,9 @@ public sealed class ExtractionJobs(CrawlerDbContext db, CredentialCipher cipher,
     public async Task<ReceivedDocumentsResponse?> ResultAsync(Guid id, string companyId, CancellationToken token)
     {
         var e = await Find(id, companyId, token);
-        if (e is null || e.JobStatus is not (JobStatus.Completed or JobStatus.Failed)) return null;
+        if (e is null || !ExtractionLifecycle.IsTerminal(e.JobStatus)) return null;
         var result = new ReceivedDocumentsResponse { ExtractionId = id, CompanyId = e.CompanyId,
+            JobStatus = e.JobStatus, CancellationRequestedAt = e.CancellationRequestedAt, CancelledAt = e.CancelledAt,
             TaxpayerId = e.TaxpayerId, BusinessName = e.BusinessName, QuerySucceeded = e.QuerySucceeded,
             Timings = await AttemptDiagnosticsStore.SummaryAsync(db, e, token),
             Status = e.ExtractionStatus ?? ExtractionStatus.Failed };

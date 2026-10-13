@@ -7,6 +7,9 @@ namespace DescagaCompronanteSRI.Models.Responses;
 public sealed class ReceivedDocumentsResponse
 {
     public Guid? ExtractionId { get; set; }
+    public Jobs.JobStatus? JobStatus { get; set; }
+    public DateTimeOffset? CancellationRequestedAt { get; set; }
+    public DateTimeOffset? CancelledAt { get; set; }
     [JsonIgnore] public bool AccumulateDocuments { get; set; } = true;
     [JsonIgnore] public int ProcessedCount { get; set; }
     [JsonIgnore] public int SavedCount { get; set; }

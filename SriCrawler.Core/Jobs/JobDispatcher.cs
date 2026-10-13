@@ -3,6 +3,7 @@ using DescagaCompronanteSRI.Persistence;
 using Hangfire;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
+using Npgsql;
 
 namespace DescagaCompronanteSRI.Jobs;
 
@@ -24,14 +25,16 @@ public sealed class JobDispatcher(IServiceScopeFactory scopes, IOptions<Extracti
         using var scope = scopes.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<CrawlerDbContext>();
         var jobs = scope.ServiceProvider.GetRequiredService<IBackgroundJobClient>();
+        await ReconcileCancellationsAsync(db, token);
         await using var transaction = await db.Database.BeginTransactionAsync(token);
         var dispatchLock = CompanyWorkload.LockKey("sri-fair-dispatcher");
         if (!await db.Database.SqlQuery<bool>($"SELECT pg_try_advisory_xact_lock({dispatchLock}) AS \"Value\"").SingleAsync(token)) return;
         var now = DateTimeOffset.UtcNow;
         var reserved = from dispatch in db.Dispatches
             join extraction in db.Extractions on dispatch.ExtractionId equals extraction.Id
-            where extraction.JobStatus != JobStatus.Completed && extraction.JobStatus != JobStatus.Failed && extraction.ExpiresAt > now
-                && (dispatch.DispatchedAt != null || extraction.JobStatus == JobStatus.Running)
+            where extraction.JobStatus != JobStatus.Completed && extraction.JobStatus != JobStatus.Failed && extraction.JobStatus != JobStatus.Cancelled
+                && (extraction.ExpiresAt > now || extraction.JobStatus == JobStatus.CancellationRequested)
+                && (dispatch.DispatchedAt != null || extraction.JobStatus == JobStatus.Running || extraction.JobStatus == JobStatus.CancellationRequested)
             select extraction;
         var available = Math.Max(0, options.Value.MaxDispatchedExtractions - await reserved.CountAsync(token));
         var published = new List<(Guid Id, string Company)>();
@@ -69,10 +72,12 @@ public sealed class JobDispatcher(IServiceScopeFactory scopes, IOptions<Extracti
             job.LastActivityAt = now;
         }
         var expired = await db.Extractions.Where(x => x.ExpiresAt <= now && x.EncryptedPassword != null).OrderBy(x => x.ExpiresAt).ThenBy(x => x.Id).Take(100).ToListAsync(token);
-        foreach (var job in expired)
+        foreach (var candidate in expired)
         {
+            var job = (await ExtractionLifecycle.LockAsync(db, candidate.Id, token))!;
+            if (job.JobStatus == JobStatus.CancellationRequested) continue;
             job.EncryptedPassword = null;
-            if (job.JobStatus is JobStatus.Completed or JobStatus.Failed) continue;
+            if (ExtractionLifecycle.IsTerminal(job.JobStatus)) continue;
             var activeAttempt = job.ActiveAttemptId is Guid attemptId ? await db.Attempts.SingleOrDefaultAsync(x => x.Id == attemptId, token) : null;
             if (activeAttempt is not null && activeAttempt.FinishedAt is null) AttemptDiagnosticsStore.MarkInterrupted(activeAttempt, now);
             job.JobStatus = JobStatus.Failed;
@@ -102,4 +107,27 @@ public sealed class JobDispatcher(IServiceScopeFactory scopes, IOptions<Extracti
             ExtractionDiagnostics.Event(logger, LogLevel.Information, DiagnosticEvent.Dispatched);
         }
     }
+    private async Task ReconcileCancellationsAsync(CrawlerDbContext db, CancellationToken token)
+    {
+        var pending = await db.Extractions.AsNoTracking().Where(x => x.JobStatus == JobStatus.CancellationRequested)
+            .OrderBy(x => x.CancellationRequestedAt).ThenBy(x => x.Id).Select(x => new { x.Id, x.TaxpayerId })
+            .Take(100).ToListAsync(token);
+        foreach (var item in pending)
+        {
+            var settings = new NpgsqlConnectionStringBuilder(options.Value.ConnectionString) { Pooling = false, CommandTimeout = 10 };
+            await using var connection = new NpgsqlConnection(settings.ConnectionString);
+            await connection.OpenAsync(token);
+            // A live worker keeps this lock until its browser session is closed.
+            if (!await ExtractionLifecycle.TryLockTaxpayerAsync(connection, item.TaxpayerId, token)) continue;
+            await using var transaction = await db.Database.BeginTransactionAsync(token);
+            var record = (await ExtractionLifecycle.LockAsync(db, item.Id, token))!;
+            if (record.JobStatus != JobStatus.CancellationRequested) continue;
+            await ExtractionLifecycle.CancelAsync(db, record, DateTimeOffset.UtcNow, token);
+            await transaction.CommitAsync(token);
+            ExtractionDiagnostics.Safely(() => logger.LogInformation(new EventId(1422, "CancellationRecovered"),
+                "Pending cancellation recovered for extraction {extractionId}, company {companyId}.", record.Id, record.CompanyId));
+        }
+        db.ChangeTracker.Clear();
+    }
+
 }

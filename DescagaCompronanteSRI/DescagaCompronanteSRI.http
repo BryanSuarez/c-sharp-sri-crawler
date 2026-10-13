@@ -146,3 +146,9 @@ XApiKey: {{AdministratorApiKey}}
 ### Download the registered XML/PDF through authorized storage access
 GET {{HostAddress}}/api/received-documents/extractions/{{ExtractionId}}/documents/{{DocumentId}}/file?companyId={{CompanyId}}
 XApiKey: {{CompanyApiKey}}
+
+### Cancel the selected extraction (optional; preserves confirmed files)
+# 200: cancelled; 202: cancellationRequested, keep polling; 409: already finished.
+# Same company credential; no body or new headers. Requires the cancellation migration and new worker.
+POST {{HostAddress}}/api/received-documents/extractions/{{ExtractionId}}/cancel?companyId={{CompanyId}}
+XApiKey: {{CompanyApiKey}}

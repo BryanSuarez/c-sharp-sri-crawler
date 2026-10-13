@@ -204,6 +204,15 @@ curl --location --request GET '{{baseUrl}}/api/received-documents/extractions/{{
   --header 'XApiKey: {{companyApiKey}}'
 ```
 
+### Cancel selected extraction (200/202/409; optional)
+
+Use only for an extraction you intend to stop. A 202 response requires polling until `cancelled`; 409 means it already finished. No body is needed.
+
+```bash
+curl --location --request POST '{{baseUrl}}/api/received-documents/extractions/{{extractionId}}/cancel?companyId={{companyId}}' \
+  --header 'XApiKey: {{companyApiKey}}'
+```
+
 ## 04 - Security checks (no SRI work)
 
 ### Missing API key (401)
