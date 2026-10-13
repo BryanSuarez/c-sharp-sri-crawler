@@ -25,3 +25,5 @@ docker compose --env-file .env.jobs logs -f --no-log-prefix sri-descarga worker
 ```
 
 The migration was applied after stopping API/worker and creating a private database backup under `.secrets/backups/`. PostgreSQL and the documents volume were preserved. Health/authentication/ownership probes passed against the running containers. An existing protected XML was read successfully after verifying AWS account `991077017871`; no upload, deletion or bucket change was performed.
+
+New extraction submissions can return **429** when the company pending or rolling 24-hour quota is full. Read `code`, `limit`, `current` and `retryAt`; a rejection creates no extraction. Continue polling accepted work, and retry with backoff. Existing matching `clientRequestId` values return the original extraction without consuming quota. See [safe isolated limit testing](../COMPANY_WORKLOAD_LIMITS.md); do not run the whole collection to fill the live queue.
