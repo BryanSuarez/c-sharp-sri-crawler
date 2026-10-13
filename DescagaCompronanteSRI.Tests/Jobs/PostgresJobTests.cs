@@ -52,11 +52,11 @@ public sealed class PostgresJobTests
         CompanyId = company ?? "test-" + Guid.NewGuid().ToString("N"), User = user, Password = "test-sensitive-password",
         Year = 2026, Month = 9, Day = 0, DocumentType = DocumentType.Invoice, DownloadFormat = format
     };
-    private static async Task<ServiceProvider> Provider(ISriDocumentJsonParser? parser = null)
+    private static async Task<ServiceProvider> Provider(ISriDocumentJsonParser? parser = null, string? connection = null)
     {
         var config = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
         {
-            ["ExtractionJobs:ConnectionString"] = Connection, ["ExtractionJobs:EncryptionKey"] = OptionsValue.EncryptionKey,
+            ["ExtractionJobs:ConnectionString"] = connection ?? Connection, ["ExtractionJobs:EncryptionKey"] = OptionsValue.EncryptionKey,
             ["ExtractionJobs:ParserUrl"] = OptionsValue.ParserUrl
         }).Build();
         var services = new ServiceCollection();
@@ -282,20 +282,33 @@ public sealed class PostgresJobTests
     [PostgresFact]
     public async Task Dispatcher_EnqueuesOnceAndExpiresCredentials()
     {
-        await using var provider = await Provider(new StubParser());
-        var query = Query();
-        using var scope = provider.CreateScope();
-        var accepted = await scope.ServiceProvider.GetRequiredService<IExtractionJobs>().AcceptAsync(query, null, default);
-        var dispatcher = new JobDispatcher(provider.GetRequiredService<IServiceScopeFactory>(), Microsoft.Extensions.Options.Options.Create(OptionsValue), NullLogger<JobDispatcher>.Instance);
-        await dispatcher.DispatchOnceAsync(default);
-        await dispatcher.DispatchOnceAsync(default);
-        await using var db = await provider.GetRequiredService<IDbContextFactory<CrawlerDbContext>>().CreateDbContextAsync();
-        var outbox = await db.Dispatches.SingleAsync(x => x.ExtractionId == accepted.ExtractionId);
-        Assert.NotNull(outbox.HangfireJobId); Assert.NotNull(outbox.DispatchedAt);
-        await db.Extractions.Where(x => x.Id == accepted.ExtractionId).ExecuteUpdateAsync(s => s.SetProperty(x => x.ExpiresAt, DateTimeOffset.UtcNow.AddMinutes(-1)));
-        await dispatcher.DispatchOnceAsync(default);
-        var expired = await db.Extractions.AsNoTracking().SingleAsync(x => x.Id == accepted.ExtractionId);
-        Assert.Null(expired.EncryptedPassword); Assert.Equal(JobStatus.Failed, expired.JobStatus);
+        // Global dispatch capacity must be tested independently of other tests' unfinished jobs.
+        var database = "dispatch_" + Guid.NewGuid().ToString("N");
+        await using var admin = new NpgsqlConnection(Connection); await admin.OpenAsync();
+        await using (var create = new NpgsqlCommand($"CREATE DATABASE {database}", admin)) await create.ExecuteNonQueryAsync();
+        var connection = new NpgsqlConnectionStringBuilder(Connection) { Database = database }.ConnectionString;
+        try
+        {
+            await using var provider = await Provider(new StubParser(), connection);
+            var query = Query();
+            using var scope = provider.CreateScope();
+            var accepted = await scope.ServiceProvider.GetRequiredService<IExtractionJobs>().AcceptAsync(query, null, default);
+            var dispatcher = new JobDispatcher(provider.GetRequiredService<IServiceScopeFactory>(), Microsoft.Extensions.Options.Options.Create(OptionsValue), NullLogger<JobDispatcher>.Instance);
+            await dispatcher.DispatchOnceAsync(default);
+            await dispatcher.DispatchOnceAsync(default);
+            await using var db = await provider.GetRequiredService<IDbContextFactory<CrawlerDbContext>>().CreateDbContextAsync();
+            var outbox = await db.Dispatches.SingleAsync(x => x.ExtractionId == accepted.ExtractionId);
+            Assert.NotNull(outbox.HangfireJobId); Assert.NotNull(outbox.DispatchedAt);
+            await db.Extractions.Where(x => x.Id == accepted.ExtractionId).ExecuteUpdateAsync(s => s.SetProperty(x => x.ExpiresAt, DateTimeOffset.UtcNow.AddMinutes(-1)));
+            await dispatcher.DispatchOnceAsync(default);
+            var expired = await db.Extractions.AsNoTracking().SingleAsync(x => x.Id == accepted.ExtractionId);
+            Assert.Null(expired.EncryptedPassword); Assert.Equal(JobStatus.Failed, expired.JobStatus);
+        }
+        finally
+        {
+            await using var drop = new NpgsqlCommand($"DROP DATABASE {database} WITH (FORCE)", admin);
+            await drop.ExecuteNonQueryAsync();
+        }
     }
 
     [PostgresFact]

@@ -458,6 +458,10 @@ namespace DescagaCompronanteSRI.Persistence.Migrations
                     b.HasIndex("CompanyId", "ClientRequestId")
                         .IsUnique();
 
+                    b.HasIndex("CompanyId", "CreatedAt");
+
+                    b.HasIndex("CompanyId", "JobStatus", "ExpiresAt");
+
                     b.HasIndex("CompanyId", "TaxpayerId", "CreatedAt");
 
                     b.ToTable("extractions", "crawler");
@@ -482,6 +486,8 @@ namespace DescagaCompronanteSRI.Persistence.Migrations
 
                     b.HasIndex("ExtractionId")
                         .IsUnique();
+
+                    b.HasIndex("DispatchedAt", "ExtractionId");
 
                     b.ToTable("dispatches", "crawler");
                 });

@@ -29,6 +29,10 @@ public sealed class ExtractionJobOptions
     public bool DashboardEnabled { get; set; }
     public string ParserUrl { get; set; } = "http://localhost:3000";
     [Range(1, 300)] public int ParserTimeoutSeconds { get; set; } = 30;
+    [Range(1, 100000)] public int MaxPendingPerCompany { get; set; } = 25;
+    [Range(1, 1000000)] public int MaxAcceptedPerCompany24Hours { get; set; } = 1000;
+    [Range(1, 64)] public int MaxConcurrentPerCompany { get; set; } = 1;
+    [Range(1, 64)] public int MaxDispatchedExtractions { get; set; } = 1;
 }
 
 public sealed record ExtractionAccepted(Guid ExtractionId, string CompanyId, string TaxpayerId,
