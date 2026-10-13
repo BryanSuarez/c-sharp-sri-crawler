@@ -415,6 +415,31 @@ public class ReceivedDocumentsServiceTests
         Assert.Equal(1, scenario.DownloadCount);
         Assert.True(scenario.Session.Disposed);
     }
+    [Theory]
+    [InlineData(DownloadFormat.Xml)]
+    [InlineData(DownloadFormat.Pdf)]
+    public async Task SelectedRetry_TraversesAllPagesButDownloadsOnlySelection(DownloadFormat format)
+    {
+        var scenario = new Scenario { Pages = [Snapshot(1, true, 4, 1, 2), Snapshot(2, false, 4, 3, 4)] };
+        var key = Snapshot(2, false, 4, 3, 4).Rows[1].Result.Value!.Metadata.AuthorizationNumber;
+        var response = await scenario.Service.QueryAsync(Query(format) with { SelectedAccessKeys = new HashSet<string> { key } });
+        Assert.Equal(2, response.Pagination.PagesProcessed); Assert.Equal(PaginationStatus.Completed, response.Pagination.Status);
+        Assert.Equal(1, scenario.DownloadCount); Assert.Equal(1, scenario.SaveCount);
+        Assert.Equal(key, Assert.Single(response.Documents).Metadata!.AuthorizationNumber);
+        Assert.True(scenario.Session.Disposed);
+    }
+
+    [Fact]
+    public async Task SelectedRetry_UnreadableRowsPreventClaimingACompleteTraversal()
+    {
+        var scenario = new Scenario { RowCount = 2, FailedReadRow = 0 };
+        var response = await scenario.Service.QueryAsync(Query() with { SelectedAccessKeys = new HashSet<string> { "1".PadLeft(49, '0') } });
+        Assert.Equal(1, scenario.DownloadCount); Assert.Equal(1, response.DownloadedCount);
+        Assert.Equal(PaginationStatus.Incomplete, response.Pagination.Status);
+        Assert.Equal(ExtractionStatus.Partial, response.Status);
+        Assert.Contains(response.Errors, x => x.Code == ExtractionErrorCode.RowReadFailed && x.RowIndex == 0);
+    }
+
     private sealed class StreamingProgress : IExtractionProgress
     {
         public bool Fail { get; init; }

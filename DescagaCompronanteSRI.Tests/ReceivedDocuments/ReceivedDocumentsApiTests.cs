@@ -315,6 +315,7 @@ public sealed class ReceivedDocumentsApiTests : IClassFixture<ReceivedDocumentsA
 
     public sealed class StubJobs(StubReceivedService service) : IExtractionJobs
     {
+        public Task<ExtractionAccepted?> RetryAsync(Guid sourceId, string companyId, SelectedRetryMode mode, IReadOnlyList<long> documentIds, string? password, Guid? clientRequestId, CancellationToken token) => Task.FromResult<ExtractionAccepted?>(null);
         public Task<ExtractionCancellation?> CancelAsync(Guid id, string companyId, Guid? requestedBy, CancellationToken token) => Task.FromResult<ExtractionCancellation?>(null);
         private readonly Dictionary<Guid, ReceivedDocumentsQuery> queries = [];
         public Task<ExtractionAccepted> AcceptAsync(ReceivedDocumentsQuery query, Guid? requestId, CancellationToken token)

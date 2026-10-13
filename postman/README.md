@@ -29,3 +29,7 @@ The migration was applied after stopping API/worker and creating a private datab
 New extraction submissions can return **429** when the company pending or rolling 24-hour quota is full. Read `code`, `limit`, `current` and `retryAt`; a rejection creates no extraction. Continue polling accepted work, and retry with backoff. Existing matching `clientRequestId` values return the original extraction without consuming quota. See [safe isolated limit testing](../COMPANY_WORKLOAD_LIMITS.md); do not run the whole collection to fill the live queue.
 
 Use **Cancel selected extraction** only when you intend to stop the selected ID. `202` means `cancellationRequested`; continue polling until `cancelled`. `200` confirms cancellation, while `409` means the selected extraction already finished. Results and files remain available. See [cancellation and coordinated activation](../EXTRACTION_CANCELLATION.md); the running stack must be migrated and restarted first.
+
+## Selected failures
+
+The optional selected-retries folder adds download and XML parsing requests. Set `sourceExtractionId` to the terminal source job and `retryDocumentIds` to a JSON array of its failed **result** IDs, for example `[123,125]`. Parsing retries do not send SRI credentials. Follow the new child extraction ID from the response; the source history remains unchanged. Generated `clientRequestId` values create independent retries; replace them with a fixed UUID when testing idempotency. See [retry semantics and activation](../SELECTED_FAILURE_RETRIES.md).

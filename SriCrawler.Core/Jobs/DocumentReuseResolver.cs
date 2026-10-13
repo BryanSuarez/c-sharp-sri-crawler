@@ -63,7 +63,7 @@ public sealed class DocumentReuseResolver(IDbContextFactory<CrawlerDbContext> fa
         if (!preparedKeys.Contains(key)) await PreparePageAsync(query, [key], token);
         if (!candidates.TryGetValue(key, out var files)) return null;
         var ordered = previous?.FileId is long id ? files.OrderByDescending(x => x.Id == id) : files.AsEnumerable();
-        foreach (var file in ordered)
+        foreach (var file in ordered.Where(x => query.StoredFileOnlyId == null || x.Id == query.StoredFileOnlyId))
         {
             token.ThrowIfCancellationRequested();
             var reference = ExtractionJobs.Deserialize<DocumentStorageReference>(file.StorageJson) with { LocalPath = file.LocalPath };

@@ -18,7 +18,8 @@ public enum ExtractionErrorCode
     DownloadFailed, ParsingFailed, UnsupportedDocumentType, StorageFailed, UnexpectedError,
     PaginationNavigationFailed, RepeatedPage, DuplicateDocument, PaginationStateUnknown,
     PaginationInconsistent, PaginationLimitReached,
-    InvalidMetadata, InvalidDocument, UnsupportedDocumentVersion, ValidationFailed, DocumentIdentityMismatch, InputTooLarge, StorageVerificationFailed, ExtractionCancelled
+    InvalidMetadata, InvalidDocument, UnsupportedDocumentVersion, ValidationFailed, DocumentIdentityMismatch, InputTooLarge, StorageVerificationFailed, ExtractionCancelled,
+    SelectedDocumentNotFound, SelectedDocumentNotReached, StoredRetryFileUnavailable
 }
 
 [JsonConverter(typeof(ApiEnumConverter<PaginationStatus>))]

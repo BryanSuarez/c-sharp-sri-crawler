@@ -19,6 +19,9 @@ public sealed class CompanyApiKey
 
 public sealed class ExtractionRecord
 {
+    public Guid? SourceExtractionId { get; set; }
+    public SelectedRetryMode? RetryMode { get; set; }
+    public string? RetrySelectionJson { get; set; }
     public DateTimeOffset? CancellationRequestedAt { get; set; }
     public DateTimeOffset? CancelledAt { get; set; }
     public Guid? CancellationRequestedBy { get; set; }

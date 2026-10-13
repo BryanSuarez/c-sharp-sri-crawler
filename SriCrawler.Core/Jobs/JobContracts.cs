@@ -44,7 +44,13 @@ public sealed record ExtractionSummary(Guid ExtractionId, string CompanyId, stri
     DateTimeOffset CreatedAt, DateTimeOffset? StartedAt, DateTimeOffset? FinishedAt,
     DateTimeOffset? LastActivityAt, int DiscoveredCount, int DownloadedCount, int FailedCount,
     int ConversionFailedCount, int ConversionUnsupportedCount, PaginationProgress Pagination,
-    int ValidationIssueCount = 0, int MetadataIssueCount = 0, int NewlyDownloadedCount = 0, int ReusedCount = 0, ExtractionTimings? Timings = null, DateTimeOffset? CancellationRequestedAt = null, DateTimeOffset? CancelledAt = null);
+    int ValidationIssueCount = 0, int MetadataIssueCount = 0, int NewlyDownloadedCount = 0, int ReusedCount = 0, ExtractionTimings? Timings = null, DateTimeOffset? CancellationRequestedAt = null, DateTimeOffset? CancelledAt = null, SelectedRetryInfo? Retry = null);
+[JsonConverter(typeof(ApiEnumConverter<SelectedRetryMode>))]
+public enum SelectedRetryMode { Download, Parsing }
+public sealed record SelectedRetryInfo(Guid SourceExtractionId, SelectedRetryMode Mode, int SelectedCount);
+public sealed class RetrySelectionException(string code, string message) : Exception(message)
+{ public string Code { get; } = code; }
+
 public sealed record ExtractionCancellation(Guid ExtractionId, JobStatus JobStatus, DateTimeOffset? CancellationRequestedAt, DateTimeOffset? CancelledAt);
 public sealed class ExtractionAlreadyFinishedException : Exception;
 
@@ -73,6 +79,7 @@ public interface IReceivedExtractionRunner
 }
 public interface IExtractionJobs
 {
+    Task<ExtractionAccepted?> RetryAsync(Guid sourceId, string companyId, SelectedRetryMode mode, IReadOnlyList<long> documentIds, string? password, Guid? clientRequestId, CancellationToken token);
     Task<ExtractionCancellation?> CancelAsync(Guid id, string companyId, Guid? requestedBy, CancellationToken token);
     Task<ExtractionAccepted> AcceptAsync(ReceivedDocumentsQuery query, Guid? clientRequestId, CancellationToken token);
     Task<CursorPage<ExtractionAttemptSummary>?> AttemptsAsync(Guid id, string companyId, long cursor, int limit, CancellationToken token);

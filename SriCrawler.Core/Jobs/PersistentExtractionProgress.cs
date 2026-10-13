@@ -54,6 +54,18 @@ public sealed class PersistentExtractionProgress(IDbContextFactory<CrawlerDbCont
         if (document is not null) await SaveAsync(document, token);
         return document;
     }
+    public async Task<ReceivedDocumentResponse?> ReprocessSavedAsync(ExtractionDocument source, CancellationToken token)
+    {
+        var original = ExtractionJobs.Deserialize<ReceivedDocumentResponse>(source.ResponseJson);
+        var result = await reuse.ResolveAsync(query with { StoredFileOnlyId = source.FileId }, original.Metadata!, original.PageNumber, original.RowIndex, source, token);
+        if (result is not null)
+        {
+            if (result.DownloadStatus == DocumentDownloadStatus.Downloaded) result.AcquisitionSource = DocumentAcquisitionSource.Reused;
+            await SaveAsync(result, token);
+        }
+        return result;
+    }
+
     public async Task SaveAsync(ReceivedDocumentResponse result, CancellationToken token)
     {
         if (result.DownloadStatus == DocumentDownloadStatus.Downloaded &&

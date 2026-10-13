@@ -21,6 +21,7 @@ public sealed class CrawlerDbContext(DbContextOptions<CrawlerDbContext> options)
         model.Entity<CompanyApiKey>().HasIndex(x => new { x.CompanyId, x.Id });
         model.Entity<CompanyApiKey>().Property(x => x.Name).HasMaxLength(100);
         model.Entity<ExtractionRecord>().ToTable("extractions");
+        model.Entity<ExtractionRecord>().HasOne<ExtractionRecord>().WithMany().HasForeignKey(x => x.SourceExtractionId).OnDelete(DeleteBehavior.Restrict);
         model.Entity<ExtractionRecord>().Property(x => x.DownloadPolicy).HasDefaultValue(DescagaCompronanteSRI.Models.Enums.DownloadPolicy.Refresh).HasSentinel(DescagaCompronanteSRI.Models.Enums.DownloadPolicy.Refresh);
         model.Entity<ExtractionRecord>().HasIndex(e => new { e.CompanyId, e.ClientRequestId }).IsUnique();
         model.Entity<ExtractionRecord>().HasIndex(e => new { e.CompanyId, e.TaxpayerId, e.CreatedAt });

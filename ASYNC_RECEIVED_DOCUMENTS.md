@@ -179,3 +179,7 @@ Received submissions now apply per-company pending/rolling-usage limits before a
 ## Explicit company cancellation
 
 Use `POST /api/received-documents/extractions/{id}/cancel?companyId=…` with the existing company key. Pending work becomes `cancelled`; active work first reports `cancellationRequested`. Confirmed documents remain available. Poll until `completed`, `failed` or `cancelled`; a job marked `cancellationRequested` is still closing. See [cancellation, timestamps, quota and coordinated activation](EXTRACTION_CANCELLATION.md). Selective retries remain separate.
+
+## Selected-failure retries
+
+`POST /api/received-documents/extractions/{id}/retries?companyId=…` creates a separate asynchronous child for chosen failed result IDs. Download mode requires fresh SRI credentials; parsing mode processes the registered XML without a browser. Existing status, documents, errors, attempts, limits and cancellation apply. The source remains unchanged. See [the retry contract, migration and examples](SELECTED_FAILURE_RETRIES.md).

@@ -65,6 +65,32 @@ public sealed class ReceivedDocumentsController(IExtractionJobs jobs, IOptions<E
         catch (Exception e) when (e is PersistenceUnavailableException or NpgsqlException)
         { return StatusCode(503, new { code = "persistenceUnavailable", message = "Extraction persistence is temporarily unavailable." }); }
     }
+    /// <summary>Creates an asynchronous child extraction for selected failed results. Parsing retries never contact SRI.</summary>
+    [HttpPost("extractions/{id:guid}/retries")]
+    [ProducesResponseType(typeof(ExtractionAccepted), 202)]
+    [ProducesResponseType(400)]
+    [ProducesResponseType(404)]
+    [ProducesResponseType(409)]
+    [ProducesResponseType(typeof(WorkloadLimitResponse), 429)]
+    [ProducesResponseType(503)]
+    public async Task<IActionResult> Retry(Guid id, [FromQuery] string companyId,
+        [FromBody] SelectedFailureRetryRequest request, CancellationToken token)
+    {
+        if (!ApiAccess.CanAccess(User, companyId)) return NotFound();
+        try
+        {
+            var result = await jobs.RetryAsync(id, ApiAccess.Company(User, companyId), request.Mode!.Value,
+                request.DocumentIds, request.Password, request.ClientRequestId, token);
+            return result is null ? NotFound() : StatusCode(202, result);
+        }
+        catch (RetrySelectionException e)
+        { return StatusCode(e.Code is "retrySourceNotFinished" or "resultNotRetryable" ? 409 : 400, new { code = e.Code, message = e.Message }); }
+        catch (IdempotencyConflictException)
+        { return Conflict(new { code = "idempotencyConflict", message = "clientRequestId was already used with different parameters." }); }
+        catch (WorkloadLimitExceededException e) { return StatusCode(429, e.Result); }
+        catch (Exception e) when (e is PersistenceUnavailableException or NpgsqlException)
+        { return StatusCode(503, new { code = "persistenceUnavailable", message = "Extraction persistence is temporarily unavailable." }); }
+    }
     /// <summary>Requests cancellation. Confirmed files remain available; active work returns 202 until cleanup finishes.</summary>
     [HttpPost("extractions/{id:guid}/cancel")]
     [ProducesResponseType(typeof(ExtractionCancellation), 200)]
