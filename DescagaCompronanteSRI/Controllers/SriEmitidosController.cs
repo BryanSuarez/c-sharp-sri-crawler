@@ -3,8 +3,11 @@ using DescagaCompronanteSRI.Models.Dtos;
 using DescagaCompronanteSRI.Models.Requests;
 using DescagaCompronanteSRI.Validation;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.Authorization;
+using DescagaCompronanteSRI.ApiSecurity;
 
 [ApiController]
+[Authorize(Policy = ApiAccess.CompanyPolicy)]
 [Route("api/[controller]")]
 public class SriEmitidosController : ControllerBase
 {

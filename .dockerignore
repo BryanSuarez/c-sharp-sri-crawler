@@ -24,3 +24,6 @@
 **/vpn/
 **/*cookies*.json
 **/.env
+
+**/.env.security
+**/.secrets/

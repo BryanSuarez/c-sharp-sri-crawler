@@ -1,0 +1,1771 @@
+{
+  "info": {
+    "_postman_id": "061f9d36-d711-4f57-baea-79842de5fba6",
+    "name": "SRI Crawler - Company Access and Received Documents",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+    "description": "Import the private local environment, select it, and run requests manually. Credentials and result IDs are captured automatically. Enter your SRI password locally before a real extraction. Revocation tests run last."
+  },
+  "auth": {
+    "type": "noauth"
+  },
+  "item": [
+    {
+      "name": "01 - Readiness and credentials",
+      "description": "",
+      "item": [
+        {
+          "name": "Health (200)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "auth": {
+              "type": "noauth"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/health",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "health"
+              ]
+            },
+            "description": ""
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Expected HTTP status\", () => pm.expect(pm.response.code).to.be.oneOf([200]));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Create company credential (201; captures key)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "XApiKey",
+                "value": "{{adminApiKey}}",
+                "type": "text"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "auth": {
+              "type": "noauth"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/admin/companies/{{companyId}}/api-keys",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "admin",
+                "companies",
+                "{{companyId}}",
+                "api-keys"
+              ]
+            },
+            "description": "Run once when you need a new key. It replaces environment variables with the newly returned credential.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Postman local - company\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (!pm.environment.get(\"adminApiKey\")) throw new Error(\"Set adminApiKey in the private environment first.\");"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Expected HTTP status\", () => pm.expect(pm.response.code).to.be.oneOf([201]));",
+                  "if (pm.response.code === 201) {",
+                  "  const body = pm.response.json();",
+                  "  pm.environment.set(\"companyApiKey\", body.apiKey);",
+                  "  pm.environment.set(\"companyKeyId\", body.key.keyId);",
+                  "  pm.test(\"Credential belongs to requested company\", () => pm.expect(body.key.companyId).to.eql(pm.environment.get(\"companyId\")));",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "List company credentials (200)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "XApiKey",
+                "value": "{{adminApiKey}}",
+                "type": "text"
+              }
+            ],
+            "auth": {
+              "type": "noauth"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/admin/companies/{{companyId}}/api-keys?limit=100",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "admin",
+                "companies",
+                "{{companyId}}",
+                "api-keys"
+              ],
+              "query": [
+                {
+                  "key": "limit",
+                  "value": "100"
+                }
+              ]
+            },
+            "description": ""
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (!pm.environment.get(\"adminApiKey\")) throw new Error(\"Set adminApiKey in the private environment first.\");"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Expected HTTP status\", () => pm.expect(pm.response.code).to.be.oneOf([200]));",
+                  "pm.test(\"No returned secrets\", () => pm.expect(pm.response.text()).not.to.include(\"secretHash\"));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Create second company credential (201; captures key)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "XApiKey",
+                "value": "{{adminApiKey}}",
+                "type": "text"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "auth": {
+              "type": "noauth"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/admin/companies/{{otherCompanyId}}/api-keys",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "admin",
+                "companies",
+                "{{otherCompanyId}}",
+                "api-keys"
+              ]
+            },
+            "description": "No SRI access; creates a key for isolation checks only.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Postman local - isolation\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (!pm.environment.get(\"adminApiKey\")) throw new Error(\"Set adminApiKey in the private environment first.\");"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Expected HTTP status\", () => pm.expect(pm.response.code).to.be.oneOf([201]));",
+                  "if (pm.response.code === 201) {",
+                  "  const body = pm.response.json();",
+                  "  pm.environment.set(\"otherApiKey\", body.apiKey);",
+                  "  pm.environment.set(\"otherKeyId\", body.key.keyId);",
+                  "  pm.test(\"Credential belongs to requested company\", () => pm.expect(body.key.companyId).to.eql(pm.environment.get(\"otherCompanyId\")));",
+                  "}"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "02 - Submit real received extractions",
+      "description": "Run individual submissions, then poll their status. Do not run this entire folder automatically: each new submission can create real SRI work.",
+      "item": [
+        {
+          "name": "Submit XML asynchronously (202)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "XApiKey",
+                "value": "{{companyApiKey}}",
+                "type": "text"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "auth": {
+              "type": "noauth"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/received-documents/query",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "received-documents",
+                "query"
+              ]
+            },
+            "description": "Real SRI request. API replies promptly; polling is manual. Uses a new clientRequestId on each send.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"companyId\": \"{{companyId}}\",\n  \"user\": \"{{sriUser}}\",\n  \"additionalUser\": \"\",\n  \"password\": \"{{sriPassword}}\",\n  \"day\": 0,\n  \"year\": {{year}},\n  \"month\": {{month}},\n  \"documentType\": \"invoice\",\n  \"downloadFormat\": \"xml\",\n  \"downloadPolicy\": \"reuseValid\",\n  \"executionMode\": \"async\",\n  \"clientRequestId\": \"{{clientRequestId}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (!pm.environment.get(\"companyApiKey\")) throw new Error(\"Set companyApiKey in the private environment first.\");",
+                  "if (!pm.environment.get(\"sriPassword\")) throw new Error(\"Enter your SRI password locally before starting a real extraction.\");",
+                  "pm.environment.set(\"clientRequestId\", pm.variables.replaceIn(\"{{$guid}}\"));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Expected HTTP status\", () => pm.expect(pm.response.code).to.be.oneOf([202]));",
+                  "if ([200,202].includes(pm.response.code)) {",
+                  "  const body = pm.response.json();",
+                  "  pm.environment.set(\"extractionId\", body.extractionId);",
+                  "  pm.environment.unset(\"documentId\");",
+                  "  pm.environment.unset(\"storageKey\");",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Repeat same XML request (idempotency)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "XApiKey",
+                "value": "{{companyApiKey}}",
+                "type": "text"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "auth": {
+              "type": "noauth"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/received-documents/query",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "received-documents",
+                "query"
+              ]
+            },
+            "description": "Use directly after the XML submission, with unchanged query parameters. It does not start another extraction.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"companyId\": \"{{companyId}}\",\n  \"user\": \"{{sriUser}}\",\n  \"additionalUser\": \"\",\n  \"password\": \"{{sriPassword}}\",\n  \"day\": 0,\n  \"year\": {{year}},\n  \"month\": {{month}},\n  \"documentType\": \"invoice\",\n  \"downloadFormat\": \"xml\",\n  \"downloadPolicy\": \"reuseValid\",\n  \"executionMode\": \"async\",\n  \"clientRequestId\": \"{{clientRequestId}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (!pm.environment.get(\"companyApiKey\")) throw new Error(\"Set companyApiKey in the private environment first.\");",
+                  "if (!pm.environment.get(\"sriPassword\")) throw new Error(\"Enter your SRI password locally before starting a real extraction.\");",
+                  "if (!pm.environment.get(\"extractionId\")) throw new Error(\"Submit an extraction or set extractionId to an existing extraction first.\");",
+                  "if (!pm.environment.get(\"clientRequestId\")) throw new Error(\"Submit XML first.\");"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Expected HTTP status\", () => pm.expect(pm.response.code).to.be.oneOf([202]));",
+                  "if (pm.response.code === 202) pm.test(\"Same extraction\", () => pm.expect(pm.response.json().extractionId).to.eql(pm.environment.get(\"extractionId\")));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Submit PDF asynchronously (202)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "XApiKey",
+                "value": "{{companyApiKey}}",
+                "type": "text"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "auth": {
+              "type": "noauth"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/received-documents/query",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "received-documents",
+                "query"
+              ]
+            },
+            "description": "Starts a new real extraction and replaces extractionId. It does not download XML implicitly.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"companyId\": \"{{companyId}}\",\n  \"user\": \"{{sriUser}}\",\n  \"additionalUser\": \"\",\n  \"password\": \"{{sriPassword}}\",\n  \"day\": 0,\n  \"year\": {{year}},\n  \"month\": {{month}},\n  \"documentType\": \"invoice\",\n  \"downloadFormat\": \"pdf\",\n  \"downloadPolicy\": \"reuseValid\",\n  \"executionMode\": \"async\",\n  \"clientRequestId\": \"{{clientRequestId}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (!pm.environment.get(\"companyApiKey\")) throw new Error(\"Set companyApiKey in the private environment first.\");",
+                  "if (!pm.environment.get(\"sriPassword\")) throw new Error(\"Enter your SRI password locally before starting a real extraction.\");",
+                  "pm.environment.set(\"clientRequestId\", pm.variables.replaceIn(\"{{$guid}}\"));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Expected HTTP status\", () => pm.expect(pm.response.code).to.be.oneOf([202]));",
+                  "if ([200,202].includes(pm.response.code)) {",
+                  "  const body = pm.response.json();",
+                  "  pm.environment.set(\"extractionId\", body.extractionId);",
+                  "  pm.environment.unset(\"documentId\");",
+                  "  pm.environment.unset(\"storageKey\");",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Submit XML with bounded synchronous wait (200/202)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "XApiKey",
+                "value": "{{companyApiKey}}",
+                "type": "text"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "auth": {
+              "type": "noauth"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/received-documents/query",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "received-documents",
+                "query"
+              ]
+            },
+            "description": "May wait up to 120 seconds. A 202 means polling must continue; it is not an error. Wrong SRI credentials may produce 500 when the job finishes before the wait ends.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"companyId\": \"{{companyId}}\",\n  \"user\": \"{{sriUser}}\",\n  \"additionalUser\": \"\",\n  \"password\": \"{{sriPassword}}\",\n  \"day\": 0,\n  \"year\": {{year}},\n  \"month\": {{month}},\n  \"documentType\": \"invoice\",\n  \"downloadFormat\": \"xml\",\n  \"downloadPolicy\": \"reuseValid\",\n  \"executionMode\": \"sync\",\n  \"clientRequestId\": \"{{clientRequestId}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (!pm.environment.get(\"companyApiKey\")) throw new Error(\"Set companyApiKey in the private environment first.\");",
+                  "if (!pm.environment.get(\"sriPassword\")) throw new Error(\"Enter your SRI password locally before starting a real extraction.\");",
+                  "pm.environment.set(\"clientRequestId\", pm.variables.replaceIn(\"{{$guid}}\"));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Expected HTTP status\", () => pm.expect(pm.response.code).to.be.oneOf([200, 202]));",
+                  "if ([200,202].includes(pm.response.code)) {",
+                  "  const body = pm.response.json();",
+                  "  pm.environment.set(\"extractionId\", body.extractionId);",
+                  "  pm.environment.unset(\"documentId\");",
+                  "  pm.environment.unset(\"storageKey\");",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Refresh XML from SRI (202)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "XApiKey",
+                "value": "{{companyApiKey}}",
+                "type": "text"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "auth": {
+              "type": "noauth"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/received-documents/query",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "received-documents",
+                "query"
+              ]
+            },
+            "description": "Forces a real download. Run deliberately; the normal XML request already reuses valid files by default.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"companyId\": \"{{companyId}}\",\n  \"user\": \"{{sriUser}}\",\n  \"additionalUser\": \"\",\n  \"password\": \"{{sriPassword}}\",\n  \"day\": 0,\n  \"year\": {{year}},\n  \"month\": {{month}},\n  \"documentType\": \"invoice\",\n  \"downloadFormat\": \"xml\",\n  \"downloadPolicy\": \"refresh\",\n  \"executionMode\": \"async\",\n  \"clientRequestId\": \"{{clientRequestId}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (!pm.environment.get(\"companyApiKey\")) throw new Error(\"Set companyApiKey in the private environment first.\");",
+                  "if (!pm.environment.get(\"sriPassword\")) throw new Error(\"Enter your SRI password locally before starting a real extraction.\");",
+                  "pm.environment.set(\"clientRequestId\", pm.variables.replaceIn(\"{{$guid}}\"));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Expected HTTP status\", () => pm.expect(pm.response.code).to.be.oneOf([202]));",
+                  "if ([200,202].includes(pm.response.code)) {",
+                  "  const body = pm.response.json();",
+                  "  pm.environment.set(\"extractionId\", body.extractionId);",
+                  "  pm.environment.unset(\"documentId\");",
+                  "  pm.environment.unset(\"storageKey\");",
+                  "}"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "03 - Progress, results and downloads",
+      "description": "",
+      "item": [
+        {
+          "name": "Extraction status and timings (200)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "XApiKey",
+                "value": "{{companyApiKey}}",
+                "type": "text"
+              }
+            ],
+            "auth": {
+              "type": "noauth"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/received-documents/extractions/{{extractionId}}?companyId={{companyId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "received-documents",
+                "extractions",
+                "{{extractionId}}"
+              ],
+              "query": [
+                {
+                  "key": "companyId",
+                  "value": "{{companyId}}"
+                }
+              ]
+            },
+            "description": "Send every 5 seconds until completed or failed. Check extractionStatus and pagination independently from jobStatus."
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (!pm.environment.get(\"companyApiKey\")) throw new Error(\"Set companyApiKey in the private environment first.\");",
+                  "if (!pm.environment.get(\"extractionId\")) throw new Error(\"Submit an extraction or set extractionId to an existing extraction first.\");"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Expected HTTP status\", () => pm.expect(pm.response.code).to.be.oneOf([200]));",
+                  "if (pm.response.code === 200) {",
+                  " const b = pm.response.json();",
+                  " pm.test(\"Counters are consistent\", () => pm.expect(b.discoveredCount).to.eql(b.downloadedCount + b.failedCount));",
+                  " pm.test(\"Acquisition counters are consistent\", () => pm.expect(b.downloadedCount).to.eql(b.newlyDownloadedCount + b.reusedCount));",
+                  " pm.environment.set(\"jobStatus\", b.jobStatus);",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "List document results (captures first downloadable result)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "XApiKey",
+                "value": "{{companyApiKey}}",
+                "type": "text"
+              }
+            ],
+            "auth": {
+              "type": "noauth"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/received-documents/extractions/{{extractionId}}/documents?companyId={{companyId}}&limit=100",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "received-documents",
+                "extractions",
+                "{{extractionId}}",
+                "documents"
+              ],
+              "query": [
+                {
+                  "key": "companyId",
+                  "value": "{{companyId}}"
+                },
+                {
+                  "key": "limit",
+                  "value": "100"
+                }
+              ]
+            },
+            "description": ""
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (!pm.environment.get(\"companyApiKey\")) throw new Error(\"Set companyApiKey in the private environment first.\");",
+                  "if (!pm.environment.get(\"extractionId\")) throw new Error(\"Submit an extraction or set extractionId to an existing extraction first.\");"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Expected HTTP status\", () => pm.expect(pm.response.code).to.be.oneOf([200]));",
+                  "if (pm.response.code === 200) {",
+                  " const b = pm.response.json();",
+                  " pm.environment.set(\"documentsNextCursor\", b.nextCursor || \"\");",
+                  " pm.environment.unset(\"documentId\");",
+                  " pm.environment.unset(\"storageKey\");",
+                  " const saved = b.items.find(x => x.downloadStatus === \"downloaded\" && x.storage);",
+                  " if (saved) {",
+                  "  pm.environment.set(\"documentId\", String(saved.documentId));",
+                  "  pm.environment.set(\"storageKey\", saved.storage.key);",
+                  "  pm.environment.set(\"fileExtension\", saved.downloadFormat);",
+                  " }",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Next document page",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "XApiKey",
+                "value": "{{companyApiKey}}",
+                "type": "text"
+              }
+            ],
+            "auth": {
+              "type": "noauth"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/received-documents/extractions/{{extractionId}}/documents?companyId={{companyId}}&limit=100&cursor={{documentsNextCursor}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "received-documents",
+                "extractions",
+                "{{extractionId}}",
+                "documents"
+              ],
+              "query": [
+                {
+                  "key": "companyId",
+                  "value": "{{companyId}}"
+                },
+                {
+                  "key": "limit",
+                  "value": "100"
+                },
+                {
+                  "key": "cursor",
+                  "value": "{{documentsNextCursor}}"
+                }
+              ]
+            },
+            "description": ""
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (!pm.environment.get(\"companyApiKey\")) throw new Error(\"Set companyApiKey in the private environment first.\");",
+                  "if (!pm.environment.get(\"extractionId\")) throw new Error(\"Submit an extraction or set extractionId to an existing extraction first.\");",
+                  "if (!pm.environment.get(\"documentsNextCursor\")) throw new Error(\"No next results page is available.\");"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Expected HTTP status\", () => pm.expect(pm.response.code).to.be.oneOf([200]));",
+                  "if (pm.response.code === 200) pm.environment.set(\"documentsNextCursor\", pm.response.json().nextCursor || \"\");"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Document detail and JSON (200)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "XApiKey",
+                "value": "{{companyApiKey}}",
+                "type": "text"
+              }
+            ],
+            "auth": {
+              "type": "noauth"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/received-documents/extractions/{{extractionId}}/documents/{{documentId}}?companyId={{companyId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "received-documents",
+                "extractions",
+                "{{extractionId}}",
+                "documents",
+                "{{documentId}}"
+              ],
+              "query": [
+                {
+                  "key": "companyId",
+                  "value": "{{companyId}}"
+                }
+              ]
+            },
+            "description": ""
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (!pm.environment.get(\"companyApiKey\")) throw new Error(\"Set companyApiKey in the private environment first.\");",
+                  "if (!pm.environment.get(\"extractionId\")) throw new Error(\"Submit an extraction or set extractionId to an existing extraction first.\");",
+                  "if (!pm.environment.get(\"documentId\")) throw new Error(\"List downloaded documents first. Empty or running extractions may have no downloadable result yet.\");"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Expected HTTP status\", () => pm.expect(pm.response.code).to.be.oneOf([200]));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Download registered XML/PDF (200)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "XApiKey",
+                "value": "{{companyApiKey}}",
+                "type": "text"
+              }
+            ],
+            "auth": {
+              "type": "noauth"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/received-documents/extractions/{{extractionId}}/documents/{{documentId}}/file?companyId={{companyId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "received-documents",
+                "extractions",
+                "{{extractionId}}",
+                "documents",
+                "{{documentId}}",
+                "file"
+              ],
+              "query": [
+                {
+                  "key": "companyId",
+                  "value": "{{companyId}}"
+                }
+              ]
+            },
+            "description": "Use Postman Send and Download to save the file. documentId is the extraction-result ID captured by the listing."
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (!pm.environment.get(\"companyApiKey\")) throw new Error(\"Set companyApiKey in the private environment first.\");",
+                  "if (!pm.environment.get(\"extractionId\")) throw new Error(\"Submit an extraction or set extractionId to an existing extraction first.\");",
+                  "if (!pm.environment.get(\"documentId\")) throw new Error(\"List downloaded documents first. Empty or running extractions may have no downloadable result yet.\");"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Expected HTTP status\", () => pm.expect(pm.response.code).to.be.oneOf([200]));",
+                  "pm.test(\"Document content type\", () => pm.expect(pm.response.headers.get(\"Content-Type\")).to.match(/^application\\/(xml|pdf)/));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Extraction errors (200)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "XApiKey",
+                "value": "{{companyApiKey}}",
+                "type": "text"
+              }
+            ],
+            "auth": {
+              "type": "noauth"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/received-documents/extractions/{{extractionId}}/errors?companyId={{companyId}}&limit=100",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "received-documents",
+                "extractions",
+                "{{extractionId}}",
+                "errors"
+              ],
+              "query": [
+                {
+                  "key": "companyId",
+                  "value": "{{companyId}}"
+                },
+                {
+                  "key": "limit",
+                  "value": "100"
+                }
+              ]
+            },
+            "description": ""
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (!pm.environment.get(\"companyApiKey\")) throw new Error(\"Set companyApiKey in the private environment first.\");",
+                  "if (!pm.environment.get(\"extractionId\")) throw new Error(\"Submit an extraction or set extractionId to an existing extraction first.\");"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Expected HTTP status\", () => pm.expect(pm.response.code).to.be.oneOf([200]));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Attempt history and timings (200)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "XApiKey",
+                "value": "{{companyApiKey}}",
+                "type": "text"
+              }
+            ],
+            "auth": {
+              "type": "noauth"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/received-documents/extractions/{{extractionId}}/attempts?companyId={{companyId}}&cursor=0&limit=100",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "received-documents",
+                "extractions",
+                "{{extractionId}}",
+                "attempts"
+              ],
+              "query": [
+                {
+                  "key": "companyId",
+                  "value": "{{companyId}}"
+                },
+                {
+                  "key": "cursor",
+                  "value": "0"
+                },
+                {
+                  "key": "limit",
+                  "value": "100"
+                }
+              ]
+            },
+            "description": ""
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (!pm.environment.get(\"companyApiKey\")) throw new Error(\"Set companyApiKey in the private environment first.\");",
+                  "if (!pm.environment.get(\"extractionId\")) throw new Error(\"Submit an extraction or set extractionId to an existing extraction first.\");"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Expected HTTP status\", () => pm.expect(pm.response.code).to.be.oneOf([200]));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "04 - Security checks (no SRI work)",
+      "description": "",
+      "item": [
+        {
+          "name": "Missing API key (401)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "auth": {
+              "type": "noauth"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/received-documents/extractions/{{extractionId}}?companyId={{companyId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "received-documents",
+                "extractions",
+                "{{extractionId}}"
+              ],
+              "query": [
+                {
+                  "key": "companyId",
+                  "value": "{{companyId}}"
+                }
+              ]
+            },
+            "description": ""
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (!pm.environment.get(\"extractionId\")) throw new Error(\"Submit an extraction or set extractionId to an existing extraction first.\");"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Expected HTTP status\", () => pm.expect(pm.response.code).to.be.oneOf([401]));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Company key cannot administer credentials (403)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "XApiKey",
+                "value": "{{companyApiKey}}",
+                "type": "text"
+              }
+            ],
+            "auth": {
+              "type": "noauth"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/admin/companies/{{companyId}}/api-keys",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "admin",
+                "companies",
+                "{{companyId}}",
+                "api-keys"
+              ]
+            },
+            "description": ""
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (!pm.environment.get(\"companyApiKey\")) throw new Error(\"Set companyApiKey in the private environment first.\");"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Expected HTTP status\", () => pm.expect(pm.response.code).to.be.oneOf([403]));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Administrator cannot read extraction (403)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "XApiKey",
+                "value": "{{adminApiKey}}",
+                "type": "text"
+              }
+            ],
+            "auth": {
+              "type": "noauth"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/received-documents/extractions/{{extractionId}}?companyId={{companyId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "received-documents",
+                "extractions",
+                "{{extractionId}}"
+              ],
+              "query": [
+                {
+                  "key": "companyId",
+                  "value": "{{companyId}}"
+                }
+              ]
+            },
+            "description": ""
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (!pm.environment.get(\"adminApiKey\")) throw new Error(\"Set adminApiKey in the private environment first.\");",
+                  "if (!pm.environment.get(\"extractionId\")) throw new Error(\"Submit an extraction or set extractionId to an existing extraction first.\");"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Expected HTTP status\", () => pm.expect(pm.response.code).to.be.oneOf([403]));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Foreign company cannot read extraction (404)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "XApiKey",
+                "value": "{{otherApiKey}}",
+                "type": "text"
+              }
+            ],
+            "auth": {
+              "type": "noauth"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/received-documents/extractions/{{extractionId}}?companyId={{companyId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "received-documents",
+                "extractions",
+                "{{extractionId}}"
+              ],
+              "query": [
+                {
+                  "key": "companyId",
+                  "value": "{{companyId}}"
+                }
+              ]
+            },
+            "description": ""
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (!pm.environment.get(\"otherApiKey\")) throw new Error(\"Set otherApiKey in the private environment first.\");",
+                  "if (!pm.environment.get(\"extractionId\")) throw new Error(\"Submit an extraction or set extractionId to an existing extraction first.\");"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Expected HTTP status\", () => pm.expect(pm.response.code).to.be.oneOf([404]));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Foreign company ID does not grant access (404)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "XApiKey",
+                "value": "{{otherApiKey}}",
+                "type": "text"
+              }
+            ],
+            "auth": {
+              "type": "noauth"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/received-documents/extractions/{{extractionId}}?companyId={{otherCompanyId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "received-documents",
+                "extractions",
+                "{{extractionId}}"
+              ],
+              "query": [
+                {
+                  "key": "companyId",
+                  "value": "{{otherCompanyId}}"
+                }
+              ]
+            },
+            "description": ""
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (!pm.environment.get(\"otherApiKey\")) throw new Error(\"Set otherApiKey in the private environment first.\");",
+                  "if (!pm.environment.get(\"extractionId\")) throw new Error(\"Submit an extraction or set extractionId to an existing extraction first.\");"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Expected HTTP status\", () => pm.expect(pm.response.code).to.be.oneOf([404]));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Foreign company cannot download file (404)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "XApiKey",
+                "value": "{{otherApiKey}}",
+                "type": "text"
+              }
+            ],
+            "auth": {
+              "type": "noauth"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/received-documents/extractions/{{extractionId}}/documents/{{documentId}}/file?companyId={{companyId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "received-documents",
+                "extractions",
+                "{{extractionId}}",
+                "documents",
+                "{{documentId}}",
+                "file"
+              ],
+              "query": [
+                {
+                  "key": "companyId",
+                  "value": "{{companyId}}"
+                }
+              ]
+            },
+            "description": ""
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (!pm.environment.get(\"otherApiKey\")) throw new Error(\"Set otherApiKey in the private environment first.\");",
+                  "if (!pm.environment.get(\"extractionId\")) throw new Error(\"Submit an extraction or set extractionId to an existing extraction first.\");",
+                  "if (!pm.environment.get(\"documentId\")) throw new Error(\"List downloaded documents first. Empty or running extractions may have no downloadable result yet.\");"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Expected HTTP status\", () => pm.expect(pm.response.code).to.be.oneOf([404]));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Cannot create extraction for a foreign company (403)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "XApiKey",
+                "value": "{{companyApiKey}}",
+                "type": "text"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "auth": {
+              "type": "noauth"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/received-documents/query",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "received-documents",
+                "query"
+              ]
+            },
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"companyId\": \"{{otherCompanyId}}\",\n  \"user\": \"1790012345001\",\n  \"password\": \"not-used-for-security-check\",\n  \"year\": 2026,\n  \"month\": 5,\n  \"day\": 0,\n  \"documentType\": \"invoice\",\n  \"downloadFormat\": \"xml\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (!pm.environment.get(\"companyApiKey\")) throw new Error(\"Set companyApiKey in the private environment first.\");",
+                  "if (pm.environment.get(\"companyId\") === pm.environment.get(\"otherCompanyId\")) throw new Error(\"Use different company IDs.\");"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Expected HTTP status\", () => pm.expect(pm.response.code).to.be.oneOf([403]));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Static document URL is disabled (404)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "XApiKey",
+                "value": "{{companyApiKey}}",
+                "type": "text"
+              }
+            ],
+            "auth": {
+              "type": "noauth"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/documents/{{storageKey}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "documents",
+                "{{storageKey}}"
+              ]
+            },
+            "description": ""
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (!pm.environment.get(\"companyApiKey\")) throw new Error(\"Set companyApiKey in the private environment first.\");",
+                  "if (!pm.environment.get(\"storageKey\")) throw new Error(\"List downloaded results first.\");"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Expected HTTP status\", () => pm.expect(pm.response.code).to.be.oneOf([404]));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Issued routes disabled in required mode (404)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "XApiKey",
+                "value": "{{companyApiKey}}",
+                "type": "text"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "auth": {
+              "type": "noauth"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/SriEmitidos/consultar",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "SriEmitidos",
+                "consultar"
+              ]
+            },
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (!pm.environment.get(\"companyApiKey\")) throw new Error(\"Set companyApiKey in the private environment first.\");"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Expected HTTP status\", () => pm.expect(pm.response.code).to.be.oneOf([404]));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Swagger disabled in required mode (404)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "XApiKey",
+                "value": "{{companyApiKey}}",
+                "type": "text"
+              }
+            ],
+            "auth": {
+              "type": "noauth"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/swagger/index.html",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "swagger",
+                "index.html"
+              ]
+            },
+            "description": ""
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (!pm.environment.get(\"companyApiKey\")) throw new Error(\"Set companyApiKey in the private environment first.\");"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Expected HTTP status\", () => pm.expect(pm.response.code).to.be.oneOf([404]));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "05 - Revoke the test credential (run last)",
+      "description": "After these checks, create a new company credential to continue normal testing.",
+      "item": [
+        {
+          "name": "Revoke current company credential (204)",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "XApiKey",
+                "value": "{{adminApiKey}}",
+                "type": "text"
+              }
+            ],
+            "auth": {
+              "type": "noauth"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/admin/companies/{{companyId}}/api-keys/{{companyKeyId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "admin",
+                "companies",
+                "{{companyId}}",
+                "api-keys",
+                "{{companyKeyId}}"
+              ]
+            },
+            "description": "Revokes only the key stored in this environment. Existing jobs continue, but future company requests are rejected."
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (!pm.environment.get(\"adminApiKey\")) throw new Error(\"Set adminApiKey in the private environment first.\");",
+                  "if (!pm.environment.get(\"companyKeyId\")) throw new Error(\"Create or select the company credential first.\");"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Expected HTTP status\", () => pm.expect(pm.response.code).to.be.oneOf([204]));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Revoked company credential is rejected (401)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "XApiKey",
+                "value": "{{companyApiKey}}",
+                "type": "text"
+              }
+            ],
+            "auth": {
+              "type": "noauth"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/received-documents/extractions/{{extractionId}}?companyId={{companyId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "received-documents",
+                "extractions",
+                "{{extractionId}}"
+              ],
+              "query": [
+                {
+                  "key": "companyId",
+                  "value": "{{companyId}}"
+                }
+              ]
+            },
+            "description": ""
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (!pm.environment.get(\"companyApiKey\")) throw new Error(\"Set companyApiKey in the private environment first.\");",
+                  "if (!pm.environment.get(\"extractionId\")) throw new Error(\"Submit an extraction or set extractionId to an existing extraction first.\");"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Expected HTTP status\", () => pm.expect(pm.response.code).to.be.oneOf([401]));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Repeat revocation safely (204)",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "XApiKey",
+                "value": "{{adminApiKey}}",
+                "type": "text"
+              }
+            ],
+            "auth": {
+              "type": "noauth"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/admin/companies/{{companyId}}/api-keys/{{companyKeyId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "admin",
+                "companies",
+                "{{companyId}}",
+                "api-keys",
+                "{{companyKeyId}}"
+              ]
+            },
+            "description": ""
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (!pm.environment.get(\"adminApiKey\")) throw new Error(\"Set adminApiKey in the private environment first.\");"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Expected HTTP status\", () => pm.expect(pm.response.code).to.be.oneOf([204]));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

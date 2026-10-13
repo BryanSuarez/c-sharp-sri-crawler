@@ -28,13 +28,25 @@ This checklist follows the original 14-item received-document review. Checked en
 - [x] Encrypted transient SRI credentials, idempotent acceptance, recoverable outbox and restart recovery.
 - [x] Docker Compose processes, health checks, migration workflow and local setup documentation.
 
-## Recommended next item
+## Commercial beta checklist
 
-**Item 9: remove unnecessary waits/navigation.** Use the recorded stage/operation timings to reduce measured modal/login/portal delays while preserving verified response and pagination checks.
+- [x] **1. Secure company API access.** Per-company API keys, separate private administrative API, hashed secrets, expiry/revocation, tenant authorization, protected Local/S3/R2 file streaming and removal of static document access. Issued routes are excluded from required mode. The local stack and Postman/Apidog collection are configured and verified. See [company access](COMPANY_API_ACCESS.md) and [manual API testing](postman/README.md).
+- [ ] **2. Pending-job and usage limits per company.** Bound persistent queue growth and prevent one customer from monopolizing worker capacity.
+- [ ] **3. Public cancellation and selected-failure retries.** Complete original items 5 and 11 without repeating successful work.
+- [ ] **4. Document catalog independent of extraction history.** Query documents by taxpayer/period/type for Laravel; the secured per-result file endpoint is already available.
+- [ ] **5. Reduce measured waits/navigation.** Complete original item 9 using the recorded timings.
+- [ ] **6. Beta operations.** Validate backup/restore, alerts, capacity and renewed remote-storage acceptance.
+- [ ] **Commercial isolation for issued documents.** Keep the existing contract local until company ownership is implemented.
+
+## Recommended next commercial item
+
+**Commercial item 2: pending-job and usage limits per company.** Bound admitted work using persistent counts and protect worker capacity. Authentication is now implemented; admission limits remain separate from HTTP request throttling.
+
+Then address commercial item 3 (cancellation and selected-failure retries), followed by item 4 (the document catalog for Laravel). Each remains a separate feature with its own acceptance checks; none is included in the company-access delivery.
 
 - [ ] **Repair intermittent profile/business-name reads.** Missing profile data is now diagnosed and timed; fixing its selectors/navigation was explicitly deferred from the observability block.
 
-Authentication, nightly scheduling, webhooks and frontend integration remain separate blocks; authentication is deliberately deferred during local development.
+Nightly scheduling, webhooks and frontend integration remain separate blocks. Unauthenticated testing requires explicit local-development mode and the Development environment.
 
 ## Verification evidence
 
@@ -43,3 +55,7 @@ The metadata/file-validation block passed 269 .NET tests and 11 Node tests. Real
 The reuse block passed the full 291-test .NET suite plus the candidate-ordering regression and 11 Node tests. Real consecutive queries discovered 306 XML and 306 PDF each, then reused all 612 with zero new downloads or failures. All file hashes/revisions and result links were checked. Atomic interruption checks passed on macOS/Linux. Live S3/R2 acceptance remains pending; adapter substitutions passed. See [the reuse record](DOCUMENT_REUSE.md).
 
 The observability block passed 305 .NET tests and 13 Node tests. Real XML/PDF acceptance downloaded 612 files and reused all 612 in subsequent queries. All four attempts had complete timing coverage; 16 stage durations matched logs/API/database and 306 parser calls were correlated across worker/Node. Sensitive log checks passed. See [the observability record](EXTRACTION_OBSERVABILITY.md).
+
+The company-access block passed 315 .NET tests and 13 Node tests. Eleven opt-in tests were skipped (ten browser scenarios and live remote storage). Acceptance used isolated PostgreSQL and HTTP hosts with two companies sharing a taxpayer, protected synthetic file downloads, rotation/revocation, real database connection failure and disconnect cleanup. Remote download adapters were exercised with substituted S3/R2 clients; no SRI/AWS operations were performed. Private configuration generation, Compose validation and migration compatibility passed. See [company access](COMPANY_API_ACCESS.md).
+
+Subsequent local-stack acceptance applied the additive migration after a private database backup. Health, authorized status/documents and rejection checks passed against the running containers. A registered XML was streamed successfully from S3 after confirming AWS account `991077017871`; no object was uploaded or deleted. Apidog imported 29 requests with local environment values, and live health/status/documents returned 200 while missing credentials, the administrator document request and foreign-company access returned 401, 403 and 404 respectively. New SRI work was not started during this acceptance. Live R2 acceptance remains pending.

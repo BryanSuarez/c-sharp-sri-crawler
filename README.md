@@ -384,7 +384,7 @@ La prueba de navegador usa un portal simulado local y necesita Google Chrome. Pa
 SRI_BROWSER_TESTS=1 dotnet test DescagaCompronanteSRI.Tests/DescagaCompronanteSRI.Tests.csproj --configuration Release
 ```
 
-En Swagger, prueba el nuevo endpoint con credenciales introducidas localmente y repite la consulta con `downloadFormat: "xml"` y `downloadFormat: "pdf"`. Esta comprobación real es independiente de las pruebas simuladas. La API continúa sin autenticación en esta etapa de desarrollo.
+En Swagger, prueba el nuevo endpoint con credenciales introducidas localmente y repite la consulta con `downloadFormat: "xml"` y `downloadFormat: "pdf"`. Esta comprobación real es independiente de las pruebas simuladas. La prueba sin credencial del crawler requiere el modo explícito `localDevelopment`; el modo `required` exige `XApiKey`.
 
 ## Almacenamiento de recibidos: Local, S3 y R2
 
@@ -524,7 +524,7 @@ wwwroot/recibidos/{ruc}/  # Descargas anteriores
 wwwroot/emitidos/{ruc}/
 ```
 
-> Importante: `wwwroot` está servido como archivos estáticos por la API. No expongas esta aplicación a Internet sin proteger autenticación, autorización y acceso a documentos. **Tampoco la subas a GitHub** (ver sección al inicio del README).
+Los documentos conservan estas ubicaciones, pero ya no se publican como archivos estáticos. La descarga de recibidos verifica credenciales y pertenencia al despacho; consulta [la guía de acceso seguro](COMPANY_API_ACCESS.md).
 
 ## Configuración
 
@@ -532,39 +532,38 @@ Archivos relevantes:
 
 | Archivo | Uso |
 |---|---|
-| `DescagaCompronanteSRI/appsettings.json` | Logging, `AllowedHosts`, valor `XApiKey` actual. |
+| `DescagaCompronanteSRI/appsettings.json` | Logging y `AllowedHosts`; la clave antigua fue retirada. |
 | `DescagaCompronanteSRI/appsettings.Development.json` | Logging de desarrollo. |
 | `DescagaCompronanteSRI/Properties/launchSettings.json` | Puertos locales y perfiles de ejecución. |
-| `docker-compose.yml` | Puertos, volúmenes, memoria, VPN y variables del contenedor. |
+| `.env.security` | Modo de acceso e identidad/hash del administrador; archivo privado ignorado. |
+| `docker-compose.yml` | Puerto local, volúmenes, memoria, VPN y variables del contenedor. |
 | `entrypoint.sh` | Arranque de Xvfb, OpenVPN opcional y API .NET. |
 
 ### Nota de seguridad sobre `XApiKey`
 
-Swagger declara un esquema `XApiKey`, pero en el código actual no se encontró middleware o filtro que lo haga cumplir. No asumas que los endpoints están protegidos solo porque Swagger muestre ese header.
+El modo `required` exige una credencial de despacho mediante `XApiKey`, comprueba la empresa y separa los permisos de administración. Genera la configuración privada con `python3 scripts/setup-api-security.py` y aplica la migración antes de reiniciar. La guía [COMPANY_API_ACCESS.md](COMPANY_API_ACCESS.md) contiene activación, alta, rotación, revocación y descarga.
 
-Antes de exponer la API fuera de local o red privada, implementa autenticación/autorización real.
+Para probar sin credencial, usa exclusivamente `ApiSecurity__Mode=localDevelopment` y entorno `Development`. En modo protegido, emitidos no está disponible. Laravel consumirá el servicio mediante una conexión privada y HTTPS cuando salga del equipo.
 
 ## Seguridad y limitaciones conocidas
 
 Prioridades antes de producción:
 
-1. Implementar autenticación real para todos los endpoints.
-2. Mover PDFs/XMLs fuera de `wwwroot` y servirlos solo mediante endpoints autorizados.
-3. Validar estrictamente RUC, año, mes, día, tipo de comprobante y clave de acceso.
-4. Evitar devolver `ex.Message` al cliente en producción.
-5. Redactar credenciales, identificadores y rutas sensibles en logs.
-6. Agregar rate limiting y control de concurrencia para requests que abren Playwright.
-7. Crear pruebas automatizadas para validación, XML, parsing de tablas y descarga.
-8. Revisar si la referencia a `TwoCaptcha` debe mantenerse, aislarse o removerse.
-9. Confirmar que `wwwroot/recibidos`, `wwwroot/emitidos`, `sri_cookies.json` y `vpn/client.ovpn` estén excluidos del repositorio (`.gitignore`).
+1. Implementar el aislamiento comercial de emitidos; hoy está disponible solo en desarrollo local.
+2. Agregar límites de trabajos pendientes y consumo por empresa.
+3. Preparar cancelación y reintentos de fallos seleccionados.
+4. Verificar respaldos/restauración, alertas y capacidad de la beta.
+5. Mantener el volumen y S3/R2 privados y usar HTTPS fuera del equipo.
+6. Completar una nueva aceptación comercial sobre el almacenamiento remoto configurado.
+7. Revisar si la referencia a `TwoCaptcha` debe mantenerse, aislarse o removerse.
 
 Limitaciones actuales:
 
 - Emitidos descarga PDF; no hay XML emitido implementado en el flujo actual.
-- Recibidos no tiene endpoint dedicado de descarga por archivo guardado.
+- Recibidos permite descargar archivos registrados por extracción y resultado; no importa archivos históricos sin registro.
 - La automatización depende de selectores internos del portal SRI; cambios del portal pueden romper el flujo.
 - Existen pruebas automatizadas de validación, modelos XML, coordinación, almacenamiento y contratos HTTP; las pruebas reales del SRI siguen requiriendo credenciales introducidas localmente.
-- Swagger está habilitado siempre en `Program.cs`.
+- Swagger y el dashboard opcional están disponibles únicamente en el modo local explícito.
 
 ## Troubleshooting
 

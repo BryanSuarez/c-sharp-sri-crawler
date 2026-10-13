@@ -348,9 +348,9 @@ public sealed class ReceivedDocumentsApiTests : IClassFixture<ReceivedDocumentsA
         public StubReceivedService Received { get; } = new();
         protected override void ConfigureWebHost(IWebHostBuilder builder)
         {
-            builder.UseEnvironment("Testing");
+            builder.UseEnvironment("Development");
             builder.ConfigureAppConfiguration((_, config) => config.AddInMemoryCollection(new Dictionary<string, string?>
-            { ["DOCUMENT_STORAGE_PROVIDER"] = "Local", ["ExtractionJobs:ConnectionString"] = "Host=localhost;Database=test", ["ExtractionJobs:EncryptionKey"] = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=", ["ExtractionJobs:SyncWaitSeconds"] = "1" }));
+            { ["ApiSecurity:Mode"] = "localDevelopment", ["ApiSecurity:AdministratorId"] = Guid.Empty.ToString(), ["ApiSecurity:AdministratorHash"] = "", ["DOCUMENT_STORAGE_PROVIDER"] = "Local", ["ExtractionJobs:ConnectionString"] = "Host=localhost;Database=test", ["ExtractionJobs:EncryptionKey"] = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=", ["ExtractionJobs:SyncWaitSeconds"] = "1" }));
             builder.UseContentRoot(Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "../../../../DescagaCompronanteSRI")));
             builder.ConfigureServices(services =>
             {

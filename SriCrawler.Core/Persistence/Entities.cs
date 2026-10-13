@@ -3,6 +3,20 @@ using DescagaCompronanteSRI.Models.Enums;
 
 namespace DescagaCompronanteSRI.Persistence;
 
+public sealed class CompanyApiKey
+{
+    public long Id { get; set; }
+    public Guid PublicId { get; set; }
+    public string CompanyId { get; set; } = "";
+    public string Name { get; set; } = "";
+    public byte[] SecretHash { get; set; } = [];
+    public DateTimeOffset CreatedAt { get; set; }
+    public DateTimeOffset ExpiresAt { get; set; }
+    public DateTimeOffset? RevokedAt { get; set; }
+    public Guid CreatedBy { get; set; }
+    public Guid? RevokedBy { get; set; }
+}
+
 public sealed class ExtractionRecord
 {
     public Guid Id { get; set; }
