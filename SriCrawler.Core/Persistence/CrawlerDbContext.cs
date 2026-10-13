@@ -24,6 +24,8 @@ public sealed class CrawlerDbContext(DbContextOptions<CrawlerDbContext> options)
         model.Entity<ExtractionRecord>().Property(x => x.DownloadPolicy).HasDefaultValue(DescagaCompronanteSRI.Models.Enums.DownloadPolicy.Refresh).HasSentinel(DescagaCompronanteSRI.Models.Enums.DownloadPolicy.Refresh);
         model.Entity<ExtractionRecord>().HasIndex(e => new { e.CompanyId, e.ClientRequestId }).IsUnique();
         model.Entity<ExtractionRecord>().HasIndex(e => new { e.CompanyId, e.TaxpayerId, e.CreatedAt });
+        model.Entity<ExtractionRecord>().HasIndex(e => new { e.CompanyId, e.CreatedAt });
+        model.Entity<ExtractionRecord>().HasIndex(e => new { e.CompanyId, e.JobStatus, e.ExpiresAt });
         model.Entity<ExtractionAttempt>().ToTable("attempts");
         model.Entity<ExtractionAttempt>().HasIndex(e => new { e.ExtractionId, e.Number }).IsUnique();
         model.Entity<DocumentRecord>().ToTable("documents");
@@ -41,6 +43,7 @@ public sealed class CrawlerDbContext(DbContextOptions<CrawlerDbContext> options)
         model.Entity<ExtractionFailure>().HasIndex(d => new { d.ExtractionId, d.Id });
         model.Entity<JobDispatch>().ToTable("dispatches");
         model.Entity<JobDispatch>().HasIndex(d => d.ExtractionId).IsUnique();
+        model.Entity<JobDispatch>().HasIndex(d => new { d.DispatchedAt, d.ExtractionId });
         model.Entity<ExtractionAttempt>().HasOne<ExtractionRecord>().WithMany().HasForeignKey(x => x.ExtractionId);
         model.Entity<ExtractionDocument>().HasOne<ExtractionRecord>().WithMany().HasForeignKey(x => x.ExtractionId);
         model.Entity<ExtractionFailure>().HasOne<ExtractionRecord>().WithMany().HasForeignKey(x => x.ExtractionId);

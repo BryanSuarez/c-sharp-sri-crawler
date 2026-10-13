@@ -13,6 +13,8 @@
 # Inspect pagination.status, pagesProcessed, reportedTotalCount and duplicateCount.
 # Inspect newlyDownloadedCount/reusedCount and per-document acquisitionSource.
 # Default async response is HTTP 202. Poll the status URL until terminal.
+# New work over company limits returns 429 with code, limit, current and retryAt.
+# See COMPANY_WORKLOAD_LIMITS.md. Matching clientRequestId repeats do not consume quota.
 POST {{HostAddress}}/api/received-documents/query
 XApiKey: {{CompanyApiKey}}
 Content-Type: application/json

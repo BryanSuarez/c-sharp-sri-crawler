@@ -44,6 +44,13 @@ public sealed class ExtractionWorker(IDbContextFactory<CrawlerDbContext> factory
         // Refresh after acquiring the account lock: a previous delivery may already have finished.
         await db.Entry(record).ReloadAsync(cancellationToken);
         if (record.JobStatus is JobStatus.Completed or JobStatus.Failed) return;
+        if (!await CompanyWorkload.TryAcquireExecutionSlotAsync(connection, record.CompanyId, options.Value.MaxConcurrentPerCompany, cancellationToken))
+        {
+            ExtractionDiagnostics.Safely(() => logger.LogInformation(new EventId(1411, "CompanyExecutionDeferred"), "Company execution slots are occupied; the extraction remains pending."));
+            if (record.JobStatus != JobStatus.Running)
+                jobs.Schedule<ExtractionWorker>(x => x.ExecuteAsync(extractionId, CancellationToken.None), TimeSpan.FromSeconds(30));
+            return;
+        }
         var transientFailures = await db.Attempts.CountAsync(x => x.ExtractionId == extractionId && x.ErrorCode == "interrupted", cancellationToken);
         if (record.ExpiresAt <= DateTimeOffset.UtcNow || record.EncryptedPassword is null || transientFailures >= 3)
         {

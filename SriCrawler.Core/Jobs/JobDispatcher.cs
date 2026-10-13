@@ -24,25 +24,42 @@ public sealed class JobDispatcher(IServiceScopeFactory scopes, IOptions<Extracti
         using var scope = scopes.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<CrawlerDbContext>();
         var jobs = scope.ServiceProvider.GetRequiredService<IBackgroundJobClient>();
-        await using (var transaction = await db.Database.BeginTransactionAsync(token))
+        await using var transaction = await db.Database.BeginTransactionAsync(token);
+        var dispatchLock = CompanyWorkload.LockKey("sri-fair-dispatcher");
+        if (!await db.Database.SqlQuery<bool>($"SELECT pg_try_advisory_xact_lock({dispatchLock}) AS \"Value\"").SingleAsync(token)) return;
+        var now = DateTimeOffset.UtcNow;
+        var reserved = from dispatch in db.Dispatches
+            join extraction in db.Extractions on dispatch.ExtractionId equals extraction.Id
+            where extraction.JobStatus != JobStatus.Completed && extraction.JobStatus != JobStatus.Failed && extraction.ExpiresAt > now
+                && (dispatch.DispatchedAt != null || extraction.JobStatus == JobStatus.Running)
+            select extraction;
+        var available = Math.Max(0, options.Value.MaxDispatchedExtractions - await reserved.CountAsync(token));
+        var published = new List<(Guid Id, string Company)>();
+        for (var slot = 0; slot < available; slot++)
         {
-            var pending = await db.Dispatches.FromSqlRaw("SELECT * FROM crawler.dispatches WHERE \"DispatchedAt\" IS NULL ORDER BY \"Id\" LIMIT 20 FOR UPDATE SKIP LOCKED").ToListAsync(token);
-            foreach (var item in pending)
-            {
-                item.HangfireJobId = jobs.Enqueue<ExtractionWorker>(x => x.ExecuteAsync(item.ExtractionId, CancellationToken.None));
-                item.DispatchedAt = DateTimeOffset.UtcNow;
-            }
+            // Oldest turn per company, then FIFO within that company. Leave the rest in the outbox.
+            var next = await (from dispatch in db.Dispatches
+                join extraction in db.Extractions on dispatch.ExtractionId equals extraction.Id
+                where dispatch.DispatchedAt == null && extraction.JobStatus == JobStatus.Queued
+                    && extraction.ExpiresAt > now && extraction.EncryptedPassword != null
+                    && reserved.Count(x => x.CompanyId == extraction.CompanyId) < options.Value.MaxConcurrentPerCompany
+                let lastTurn = (from previous in db.Dispatches
+                    join owner in db.Extractions on previous.ExtractionId equals owner.Id
+                    where owner.CompanyId == extraction.CompanyId
+                    select previous.DispatchedAt).Max()
+                orderby lastTurn ?? DateTimeOffset.MinValue, extraction.CreatedAt, extraction.Id
+                select new { Dispatch = dispatch, extraction.CompanyId }).FirstOrDefaultAsync(token);
+            if (next is null) break;
+            var item = next.Dispatch;
+            item.HangfireJobId = jobs.Enqueue<ExtractionWorker>(x => x.ExecuteAsync(item.ExtractionId, CancellationToken.None));
+            item.DispatchedAt = DateTimeOffset.UtcNow;
             await db.SaveChangesAsync(token);
-            await transaction.CommitAsync(token);
-            foreach (var item in pending)
-            {
-                using var logScope = ExtractionDiagnostics.SafeScope(logger, new Dictionary<string, object> { ["extractionId"] = item.ExtractionId });
-                ExtractionDiagnostics.Event(logger, LogLevel.Information, DiagnosticEvent.Dispatched);
-            }
+            published.Add((item.ExtractionId, next.CompanyId));
         }
         db.ChangeTracker.Clear();
-        var now = DateTimeOffset.UtcNow;
-        var stale = await db.Extractions.Where(x => (x.JobStatus == JobStatus.Running && x.LastActivityAt < now.AddMinutes(-2)) || (x.JobStatus == JobStatus.Queued && x.CreatedAt < now.AddMinutes(-2) && (x.LastActivityAt == null || x.LastActivityAt < now.AddMinutes(-2)))).OrderBy(x => x.CreatedAt).ThenBy(x => x.Id).Take(20).ToListAsync(token);
+        var stale = await db.Extractions.Where(x => x.ExpiresAt > now && ((x.JobStatus == JobStatus.Running && x.LastActivityAt < now.AddMinutes(-2)) || (x.JobStatus == JobStatus.Queued && x.CreatedAt < now.AddMinutes(-2) && (x.LastActivityAt == null || x.LastActivityAt < now.AddMinutes(-2))
+            && db.Dispatches.Any(d => d.ExtractionId == x.Id && d.DispatchedAt != null && d.DispatchedAt < now.AddMinutes(-2)))))
+            .OrderBy(x => x.CreatedAt).ThenBy(x => x.Id).Take(20).ToListAsync(token);
         foreach (var job in stale)
         {
             using var logScope = ExtractionDiagnostics.SafeScope(logger, new Dictionary<string, object> { ["extractionId"] = job.Id, ["companyId"] = job.CompanyId });
@@ -77,6 +94,12 @@ public sealed class JobDispatcher(IServiceScopeFactory scopes, IOptions<Extracti
             jobs.Enqueue<ExtractionWorker>(x => x.ExecuteAsync(job.Id, CancellationToken.None));
             await db.Extractions.Where(x => x.Id == job.Id && x.JobStatus == JobStatus.Retrying)
                 .ExecuteUpdateAsync(s => s.SetProperty(x => x.LastActivityAt, now), token);
+        }
+        await transaction.CommitAsync(token);
+        foreach (var item in published)
+        {
+            using var logScope = ExtractionDiagnostics.SafeScope(logger, new Dictionary<string, object> { ["extractionId"] = item.Id, ["companyId"] = item.Company });
+            ExtractionDiagnostics.Event(logger, LogLevel.Information, DiagnosticEvent.Dispatched);
         }
     }
 }

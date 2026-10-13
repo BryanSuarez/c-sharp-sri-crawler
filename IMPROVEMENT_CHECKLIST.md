@@ -31,7 +31,7 @@ This checklist follows the original 14-item received-document review. Checked en
 ## Commercial beta checklist
 
 - [x] **1. Secure company API access.** Per-company API keys, separate private administrative API, hashed secrets, expiry/revocation, tenant authorization, protected Local/S3/R2 file streaming and removal of static document access. Issued routes are excluded from required mode. The local stack and Postman/Apidog collection are configured and verified. See [company access](COMPANY_API_ACCESS.md) and [manual API testing](postman/README.md).
-- [ ] **2. Pending-job and usage limits per company.** Bound persistent queue growth and prevent one customer from monopolizing worker capacity.
+- [x] **2. Pending-job and usage limits per company.** Transactional admission limits, rolling 24-hour accepted-work quota, typed 429 responses, idempotency without extra charges, fair bounded publication and company execution locks across workers. See [workload limits and activation](COMPANY_WORKLOAD_LIMITS.md). Verified in isolated infrastructure; the running local stack still requires the migration and restart.
 - [ ] **3. Public cancellation and selected-failure retries.** Complete original items 5 and 11 without repeating successful work.
 - [ ] **4. Document catalog independent of extraction history.** Query documents by taxpayer/period/type for Laravel; the secured per-result file endpoint is already available.
 - [ ] **5. Reduce measured waits/navigation.** Complete original item 9 using the recorded timings.
@@ -40,9 +40,9 @@ This checklist follows the original 14-item received-document review. Checked en
 
 ## Recommended next commercial item
 
-**Commercial item 2: pending-job and usage limits per company.** Bound admitted work using persistent counts and protect worker capacity. Authentication is now implemented; admission limits remain separate from HTTP request throttling.
+**Commercial item 3: public cancellation and selected-failure retries.** Let Laravel stop unwanted work and retry only failed documents while retaining confirmed results. Company access and persistent admission limits are implemented; cancellation remains separate from worker shutdown and credential expiry.
 
-Then address commercial item 3 (cancellation and selected-failure retries), followed by item 4 (the document catalog for Laravel). Each remains a separate feature with its own acceptance checks; none is included in the company-access delivery.
+Then address commercial item 4 (the document catalog for Laravel). Keep each feature separate, with its own acceptance checks; neither is included in the workload-limits delivery.
 
 - [ ] **Repair intermittent profile/business-name reads.** Missing profile data is now diagnosed and timed; fixing its selectors/navigation was explicitly deferred from the observability block.
 
@@ -59,3 +59,5 @@ The observability block passed 305 .NET tests and 13 Node tests. Real XML/PDF ac
 The company-access block passed 315 .NET tests and 13 Node tests. Eleven opt-in tests were skipped (ten browser scenarios and live remote storage). Acceptance used isolated PostgreSQL and HTTP hosts with two companies sharing a taxpayer, protected synthetic file downloads, rotation/revocation, real database connection failure and disconnect cleanup. Remote download adapters were exercised with substituted S3/R2 clients; no SRI/AWS operations were performed. Private configuration generation, Compose validation and migration compatibility passed. See [company access](COMPANY_API_ACCESS.md).
 
 Subsequent local-stack acceptance applied the additive migration after a private database backup. Health, authorized status/documents and rejection checks passed against the running containers. A registered XML was streamed successfully from S3 after confirming AWS account `991077017871`; no object was uploaded or deleted. Apidog imported 29 requests with local environment values, and live health/status/documents returned 200 while missing credentials, the administrator document request and foreign-company access returned 401, 403 and 404 respectively. New SRI work was not started during this acceptance. Live R2 acceptance remains pending.
+
+The workload-limits block passed 334 .NET tests and 13 Node tests; 11 opt-in browser/remote-storage scenarios were skipped. Nineteen new cases cover quota/concurrency bounds, real PostgreSQL admission races and rolling windows, idempotency, protected HTTP 429 responses, dispatcher fairness/recovery and a 1,000-job backlog. Real Hangfire/PostgreSQL acceptance completed three jobs in company A/B/A order with one attempt each and cleared credentials. Existing security, parser integration, pagination, validation, reuse, storage and issued regressions passed. The new migration was applied only to isolated test databases; no browser, SRI, AWS or running local-stack operation was required. See [workload limits](COMPANY_WORKLOAD_LIMITS.md).

@@ -27,6 +27,7 @@ public sealed class ReceivedDocumentsController(IExtractionJobs jobs, IOptions<E
     [ProducesResponseType(typeof(ReceivedDocumentsResponse), StatusCodes.Status500InternalServerError)]
     [ProducesResponseType(typeof(ValidationProblemDetails), StatusCodes.Status400BadRequest)]
     [ProducesResponseType(StatusCodes.Status409Conflict)]
+    [ProducesResponseType(typeof(WorkloadLimitResponse), StatusCodes.Status429TooManyRequests)]
     [ProducesResponseType(StatusCodes.Status503ServiceUnavailable)]
     public async Task<IActionResult> Query([FromBody] ReceivedDocumentsQueryRequest request, CancellationToken token)
     {
@@ -60,6 +61,7 @@ public sealed class ReceivedDocumentsController(IExtractionJobs jobs, IOptions<E
             return StatusCode(StatusCodes.Status202Accepted, accepted);
         }
         catch (IdempotencyConflictException) { return Conflict(new { code = "idempotencyConflict", message = "clientRequestId was already used with different parameters." }); }
+        catch (WorkloadLimitExceededException e) { return StatusCode(StatusCodes.Status429TooManyRequests, e.Result); }
         catch (Exception e) when (e is PersistenceUnavailableException or NpgsqlException)
         { return StatusCode(503, new { code = "persistenceUnavailable", message = "Extraction persistence is temporarily unavailable." }); }
     }

@@ -6,6 +6,8 @@ API REST en **ASP.NET Core 8** que automatiza consultas en el portal del SRI Ecu
 
 Consulta [ASYNC_RECEIVED_DOCUMENTS.md](ASYNC_RECEIVED_DOCUMENTS.md) para configuración, migraciones, API/worker/parser, progreso y recuperación. PostgreSQL y el worker son necesarios también al solicitar `executionMode: "sync"`.
 
+Los límites por despacho controlan trabajos pendientes, aceptaciones en 24 horas y turnos del worker. Consulta [configuración y respuestas 429](COMPANY_WORKLOAD_LIMITS.md) antes de activar esta versión.
+
 ## ⚠️ Importante: no subir `wwwroot` a GitHub
 
 La carpeta `wwwroot` contiene comprobantes tributarios reales (PDF/XML) con datos sensibles de contribuyentes (RUC, razón social, montos, claves de acceso). **Nunca debe subirse al repositorio.**

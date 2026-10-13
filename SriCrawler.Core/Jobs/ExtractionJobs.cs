@@ -14,7 +14,7 @@ using Npgsql;
 namespace DescagaCompronanteSRI.Jobs;
 
 public sealed class ExtractionJobs(CrawlerDbContext db, CredentialCipher cipher,
-    IOptions<ExtractionJobOptions> options, ILogger<ExtractionJobs>? logger = null) : IExtractionJobs
+    IOptions<ExtractionJobOptions> options, ILogger<ExtractionJobs>? logger = null, TimeProvider? clock = null) : IExtractionJobs
 {
     public static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
     public static string Serialize<T>(T value) => JsonSerializer.Serialize(value, Json);
@@ -45,6 +45,10 @@ public sealed class ExtractionJobs(CrawlerDbContext db, CredentialCipher cipher,
         var fingerprint = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(queryJson)));
         try
         {
+            await using var transaction = await db.Database.BeginTransactionAsync(token);
+            // Serialize quota checks and acceptance across API replicas for this company only.
+            var admissionKey = CompanyWorkload.LockKey("sri-company-admission:" + query.CompanyId);
+            await db.Database.ExecuteSqlInterpolatedAsync($"SELECT pg_advisory_xact_lock({admissionKey})", token);
             if (requestId is not null)
             {
                 var previous = await db.Extractions.AsNoTracking().SingleOrDefaultAsync(
@@ -52,7 +56,8 @@ public sealed class ExtractionJobs(CrawlerDbContext db, CredentialCipher cipher,
                 if (previous is not null) return Match(previous, fingerprint);
             }
             var id = Guid.NewGuid();
-            var now = DateTimeOffset.UtcNow;
+            var now = (clock ?? TimeProvider.System).GetUtcNow();
+            await CompanyWorkload.CheckAdmissionAsync(db, query.CompanyId, options.Value, now, token);
             var extraction = new ExtractionRecord
             {
                 Id = id, CompanyId = query.CompanyId, TaxpayerId = query.User,
@@ -64,7 +69,7 @@ public sealed class ExtractionJobs(CrawlerDbContext db, CredentialCipher cipher,
             };
             db.Extractions.Add(extraction);
             db.Dispatches.Add(new() { Id = Guid.NewGuid(), ExtractionId = id });
-            // SaveChanges creates one transaction for the extraction and its outbox entry.
+            // Quota check, extraction and outbox commit together under the company lock.
             try { await db.SaveChangesAsync(token); }
             catch (DbUpdateException e) when (e.InnerException is PostgresException { SqlState: "23505" } && requestId is not null)
             {
@@ -73,7 +78,15 @@ public sealed class ExtractionJobs(CrawlerDbContext db, CredentialCipher cipher,
                     x => x.CompanyId == query.CompanyId && x.ClientRequestId == requestId, token);
                 return Match(previous, fingerprint);
             }
+            await transaction.CommitAsync(token);
             return LogAccepted(extraction, false);
+        }
+        catch (WorkloadLimitExceededException e)
+        {
+            ExtractionDiagnostics.Safely(() => logger?.LogWarning(new EventId(1410, "CompanyAdmissionRejected"),
+                "Extraction admission rejected for company {companyId}: {code}, limit {limit}, current {current}.",
+                query.CompanyId, e.Result.Code, e.Result.Limit, e.Result.Current));
+            throw;
         }
         catch (Exception e) when (e is NpgsqlException or DbUpdateException)
         { throw new PersistenceUnavailableException(); }
