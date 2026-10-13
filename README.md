@@ -553,7 +553,7 @@ Prioridades antes de producción:
 
 1. Implementar el aislamiento comercial de emitidos; hoy está disponible solo en desarrollo local.
 2. Agregar límites de trabajos pendientes y consumo por empresa.
-3. Preparar cancelación y reintentos de fallos seleccionados.
+3. Completar reintentos de fallos seleccionados. La [cancelación pública](EXTRACTION_CANCELLATION.md) está implementada; requiere la migración y reinicio coordinado de API/worker.
 4. Verificar respaldos/restauración, alertas y capacidad de la beta.
 5. Mantener el volumen y S3/R2 privados y usar HTTPS fuera del equipo.
 6. Completar una nueva aceptación comercial sobre el almacenamiento remoto configurado.

@@ -13,7 +13,7 @@ namespace DescagaCompronanteSRI.Jobs;
 [JsonConverter(typeof(ApiEnumConverter<ExecutionMode>))]
 public enum ExecutionMode { Async, Sync }
 [JsonConverter(typeof(ApiEnumConverter<JobStatus>))]
-public enum JobStatus { Queued, Running, Retrying, Completed, Failed }
+public enum JobStatus { Queued, Running, Retrying, Completed, Failed, CancellationRequested, Cancelled }
 [JsonConverter(typeof(ApiEnumConverter<ExtractionStage>))]
 public enum ExtractionStage { Queued, Login, PortalAccess, Query, Processing, Finished }
 
@@ -26,6 +26,7 @@ public sealed class ExtractionJobOptions
     [Range(1, 48)] public int AttemptTimeoutHours { get; set; } = 6;
     [Range(1, 168)] public int CredentialLifetimeHours { get; set; } = 24;
     [Range(1, 60)] public int DispatchIntervalSeconds { get; set; } = 5;
+    [Range(1, 30)] public int CancellationPollIntervalSeconds { get; set; } = 2;
     public bool DashboardEnabled { get; set; }
     public string ParserUrl { get; set; } = "http://localhost:3000";
     [Range(1, 300)] public int ParserTimeoutSeconds { get; set; } = 30;
@@ -43,7 +44,10 @@ public sealed record ExtractionSummary(Guid ExtractionId, string CompanyId, stri
     DateTimeOffset CreatedAt, DateTimeOffset? StartedAt, DateTimeOffset? FinishedAt,
     DateTimeOffset? LastActivityAt, int DiscoveredCount, int DownloadedCount, int FailedCount,
     int ConversionFailedCount, int ConversionUnsupportedCount, PaginationProgress Pagination,
-    int ValidationIssueCount = 0, int MetadataIssueCount = 0, int NewlyDownloadedCount = 0, int ReusedCount = 0, ExtractionTimings? Timings = null);
+    int ValidationIssueCount = 0, int MetadataIssueCount = 0, int NewlyDownloadedCount = 0, int ReusedCount = 0, ExtractionTimings? Timings = null, DateTimeOffset? CancellationRequestedAt = null, DateTimeOffset? CancelledAt = null);
+public sealed record ExtractionCancellation(Guid ExtractionId, JobStatus JobStatus, DateTimeOffset? CancellationRequestedAt, DateTimeOffset? CancelledAt);
+public sealed class ExtractionAlreadyFinishedException : Exception;
+
 public sealed record JsonConversion(DocumentParseStatus Status, JsonElement? DocumentJson = null,
     string? ParserName = null, string? ParserVersion = null, string? ErrorCode = null)
 {
@@ -69,6 +73,7 @@ public interface IReceivedExtractionRunner
 }
 public interface IExtractionJobs
 {
+    Task<ExtractionCancellation?> CancelAsync(Guid id, string companyId, Guid? requestedBy, CancellationToken token);
     Task<ExtractionAccepted> AcceptAsync(ReceivedDocumentsQuery query, Guid? clientRequestId, CancellationToken token);
     Task<CursorPage<ExtractionAttemptSummary>?> AttemptsAsync(Guid id, string companyId, long cursor, int limit, CancellationToken token);
     Task<ExtractionSummary?> GetAsync(Guid id, string companyId, CancellationToken token);

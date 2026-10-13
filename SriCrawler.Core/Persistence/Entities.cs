@@ -19,6 +19,9 @@ public sealed class CompanyApiKey
 
 public sealed class ExtractionRecord
 {
+    public DateTimeOffset? CancellationRequestedAt { get; set; }
+    public DateTimeOffset? CancelledAt { get; set; }
+    public Guid? CancellationRequestedBy { get; set; }
     public Guid Id { get; set; }
     public string CompanyId { get; set; } = "";
     public string TaxpayerId { get; set; } = "";

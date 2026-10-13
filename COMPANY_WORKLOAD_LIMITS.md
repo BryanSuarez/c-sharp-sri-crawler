@@ -16,7 +16,7 @@ Set these options in `.env.jobs`, identically on every API and worker replica:
 
 Positive values are required. Maximums are 100,000 pending, 1,000,000 accepted per 24 hours, and 64 for each concurrency/publication option. Invalid configuration fails startup. Values are operational defaults, not subscription plans or measured server capacity.
 
-Completed and failed work releases pending capacity. All accepted work, including failed, expired and completely reused extractions, counts toward the rolling quota. Status polling, document downloads, worker retries and idempotent repeats do not consume additional acceptance quota. Expired jobs stop occupying pending capacity even before the existing cleanup reconciler updates their terminal state. Existing accepted jobs are not cancelled when a limit is lowered.
+Completed, failed and cancelled work releases pending capacity. `cancellationRequested` retains capacity until acknowledged, even after credential expiry. All accepted work, including failed, expired, cancelled and completely reused extractions, counts toward the rolling quota. Status polling, document downloads, worker retries and idempotent repeats do not consume additional acceptance quota. Expired jobs stop occupying pending capacity even before the existing cleanup reconciler updates their terminal state, except cancellation requests awaiting acknowledgement. Existing accepted jobs are not cancelled when a limit is lowered.
 
 The 24-hour window is based on persisted UTC acceptance timestamps; it does not reset at midnight. Keep server clocks synchronized. This is admission control, not HTTP rate limiting, document-count billing or protection against an unlimited number of new companies.
 
@@ -71,6 +71,6 @@ Events `CompanyAdmissionRejected` (1410, Warning) and `CompanyExecutionDeferred`
 
 Automated tests use isolated PostgreSQL databases and simulated extraction runners, including concurrent admission, rolling-window boundaries, idempotency, company separation, cancellation of a blocked admission, fair dispatch, simultaneous dispatchers, failed publication, expiry, company-lock release and a 1,000-job backlog. The protected HTTP tests exercise both execution modes and verify no extra headers or rejected rows are created. Existing crawler regressions remain required.
 
-This block does not contact SRI/AWS or open browsers. Actual server throughput, customer-specific plans, public cancellation and selective retries remain separate work. Deployment requires the migration and coordinated API/worker restart above.
+This block does not contact SRI/AWS or open browsers. Actual server throughput, customer-specific plans and selective retries remain separate work. Public cancellation is now covered by [its own feature](EXTRACTION_CANCELLATION.md). Deployment requires the migration and coordinated API/worker restart above.
 
 Acceptance evidence: 334 .NET tests and 13 Node tests passed. The real Hangfire/PostgreSQL test completed three simulated extractions in company A/B/A order, with one attempt per job and cleared credentials. Eleven opt-in browser/remote-storage tests were skipped. The worker build and EF model/migration consistency check passed. Temporary PostgreSQL/parser containers were removed after verification; the user’s running API/worker/database were not changed.

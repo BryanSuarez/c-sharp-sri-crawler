@@ -175,3 +175,7 @@ See [extraction observability](EXTRACTION_OBSERVABILITY.md) for structured logs,
 ## Company workload admission
 
 Received submissions now apply per-company pending/rolling-usage limits before acceptance, with HTTP 429 for rejected new work. Existing idempotent requests bypass additional quota charges. Publication rotates company turns within configured worker reservations. See [configuration, migration, retry behavior and verification](COMPANY_WORKLOAD_LIMITS.md).
+
+## Explicit company cancellation
+
+Use `POST /api/received-documents/extractions/{id}/cancel?companyId=…` with the existing company key. Pending work becomes `cancelled`; active work first reports `cancellationRequested`. Confirmed documents remain available. Poll until `completed`, `failed` or `cancelled`; a job marked `cancellationRequested` is still closing. See [cancellation, timestamps, quota and coordinated activation](EXTRACTION_CANCELLATION.md). Selective retries remain separate.

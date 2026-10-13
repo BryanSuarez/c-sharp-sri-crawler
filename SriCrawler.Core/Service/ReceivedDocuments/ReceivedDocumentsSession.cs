@@ -18,13 +18,28 @@ internal sealed class ReceivedDocumentsSession(
     IPlaywrightSessionFactory browserFactory, ISriLoginService loginService,
     ISriPortalSessionService portalService) : IReceivedDocumentsSession
 {
+    private readonly object lifecycle = new();
+    private Task<PlaywrightSession>? creation;
+    private Task? disposal;
+    private bool disposed;
     private PlaywrightSession? _session;
     public IPage Page => Session.Page;
     private PlaywrightSession Session => _session ?? throw new InvalidOperationException("Session is not initialized.");
 
     public async Task<SriUserProfile?> LoginAsync(ReceivedDocumentsQuery query)
     {
-        _session = await browserFactory.CreateAsync();
+        Task<PlaywrightSession> pending;
+        lock (lifecycle)
+        {
+            ObjectDisposedException.ThrowIf(disposed, this);
+            pending = creation ??= browserFactory.CreateAsync();
+        }
+        var created = await pending;
+        lock (lifecycle)
+        {
+            if (disposed) throw new OperationCanceledException("The session was closed during browser startup.");
+            _session = created;
+        }
         return await ExtractionDiagnostics.MeasureAsync(DiagnosticOperation.Authentication,
             () => loginService.LoginAsync(Session, query.User, query.Password, query.AdditionalUser),
             value => value is null ? DiagnosticOutcome.Failed : DiagnosticOutcome.Succeeded);
@@ -38,8 +53,22 @@ internal sealed class ReceivedDocumentsSession(
 
     public Task SubmitPortalFormAsync(string body) => portalService.SubmitJSecurityCheckAsync(Session, body);
     public Task CloseModalAsync() => Session.CerrarModalAsync();
-    public async ValueTask DisposeAsync()
+    public ValueTask DisposeAsync()
     {
-        if (_session is not null) await ExtractionDiagnostics.MeasureAsync(DiagnosticOperation.SessionCleanup, () => _session.DisposeAsync().AsTask());
+        lock (lifecycle)
+        {
+            disposed = true;
+            return new(disposal ??= DisposeCreatedSessionAsync());
+        }
+    }
+
+    private async Task DisposeCreatedSessionAsync()
+    {
+        // Wait for startup to settle so a late browser cannot escape cancellation cleanup.
+        if (creation is null) return;
+        PlaywrightSession created;
+        try { created = await creation; }
+        catch { return; /* The factory cleans up failed startup. */ }
+        await ExtractionDiagnostics.MeasureAsync(DiagnosticOperation.SessionCleanup, () => created.DisposeAsync().AsTask());
     }
 }

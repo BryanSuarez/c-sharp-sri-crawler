@@ -12,7 +12,7 @@ public static class AttemptDiagnosticsStore
         var json = ExtractionJobs.Serialize(snapshot);
         return db.Attempts.Where(x => x.Id == attemptId && x.ExtractionId == extractionId &&
             x.DiagnosticsSequence < snapshot.Sequence && db.Extractions.Any(e => e.Id == extractionId &&
-                e.ActiveAttemptId == attemptId && e.JobStatus == JobStatus.Running))
+                e.ActiveAttemptId == attemptId && (e.JobStatus == JobStatus.Running || e.JobStatus == JobStatus.CancellationRequested)))
             .ExecuteUpdateAsync(s => s.SetProperty(x => x.DiagnosticsJson, json)
                 .SetProperty(x => x.DiagnosticsVersion, snapshot.Version)
                 .SetProperty(x => x.DiagnosticsSequence, snapshot.Sequence)

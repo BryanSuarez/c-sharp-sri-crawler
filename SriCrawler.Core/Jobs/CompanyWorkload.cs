@@ -27,7 +27,7 @@ public static class CompanyWorkload
         DateTimeOffset now, CancellationToken token)
     {
         var company = db.Extractions.AsNoTracking().Where(x => x.CompanyId == companyId);
-        var pending = await company.CountAsync(x => x.JobStatus != JobStatus.Completed && x.JobStatus != JobStatus.Failed && x.ExpiresAt > now, token);
+        var pending = await company.CountAsync(x => x.JobStatus != JobStatus.Completed && x.JobStatus != JobStatus.Failed && x.JobStatus != JobStatus.Cancelled && (x.ExpiresAt > now || x.JobStatus == JobStatus.CancellationRequested), token);
         if (pending >= options.MaxPendingPerCompany)
             throw new WorkloadLimitExceededException(new(WorkloadLimitCode.CompanyPendingLimitReached,
                 "The company has reached its pending extraction limit. Retry after an extraction finishes.", options.MaxPendingPerCompany, pending, null));

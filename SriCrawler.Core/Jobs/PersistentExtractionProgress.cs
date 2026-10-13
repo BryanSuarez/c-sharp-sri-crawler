@@ -19,9 +19,10 @@ public sealed class PersistentExtractionProgress(IDbContextFactory<CrawlerDbCont
     {
         ExtractionDiagnostics.Current?.SetStage(stage);
         await using var db = await factory.CreateDbContextAsync(token);
-        await db.Extractions.Where(x => x.Id == extractionId && x.ActiveAttemptId == attemptId)
+        var updated = await db.Extractions.Where(x => x.Id == extractionId && x.ActiveAttemptId == attemptId && x.JobStatus == JobStatus.Running)
             .ExecuteUpdateAsync(s => s.SetProperty(x => x.Stage, stage)
                 .SetProperty(x => x.LastActivityAt, DateTimeOffset.UtcNow), token);
+        if (updated == 0) throw new OperationCanceledException("The attempt no longer owns a running extraction.");
         if (ExtractionDiagnostics.Current is { } diagnostics)
             await AttemptDiagnosticsStore.SaveAsync(db, extractionId, attemptId, diagnostics.Snapshot(), token);
     }
@@ -81,7 +82,7 @@ public sealed class PersistentExtractionProgress(IDbContextFactory<CrawlerDbCont
             : await parser.ParseAsync(result.SourceXml ?? "", query.DocumentType, key ?? "", token);
         using var persistence = ExtractionDiagnostics.StartOperation(DiagnosticOperation.Persistence, token);
         await using var transaction = await db.Database.BeginTransactionAsync(token);
-        var job = await db.Extractions.SingleAsync(x => x.Id == extractionId, token);
+        var job = (await ExtractionLifecycle.LockAsync(db, extractionId, token))!;
         if (job.ActiveAttemptId != attemptId || job.JobStatus != JobStatus.Running)
             throw new OperationCanceledException("Extraction ownership was lost.", token);
         var canonicalType = query.DocumentType == DocumentType.RemissionGuideAlternative ? DocumentType.RemissionGuide : query.DocumentType;
@@ -169,7 +170,10 @@ public sealed class PersistentExtractionProgress(IDbContextFactory<CrawlerDbCont
     private async Task CheckpointCoreAsync(ReceivedDocumentsResponse response, CancellationToken token)
     {
         await using var db = await factory.CreateDbContextAsync(token);
-        var job = await db.Extractions.SingleAsync(x => x.Id == extractionId && x.ActiveAttemptId == attemptId, token);
+        await using var transaction = await db.Database.BeginTransactionAsync(token);
+        var job = (await ExtractionLifecycle.LockAsync(db, extractionId, token))!;
+        if (job.ActiveAttemptId != attemptId || job.JobStatus != JobStatus.Running)
+            throw new OperationCanceledException("The attempt no longer owns a running extraction.");
         job.QuerySucceeded = response.QuerySucceeded;
         job.BusinessName = response.BusinessName;
         job.PaginationJson = ExtractionJobs.Serialize(response.Pagination);
@@ -180,6 +184,7 @@ public sealed class PersistentExtractionProgress(IDbContextFactory<CrawlerDbCont
         await db.SaveChangesAsync(token);
         if (ExtractionDiagnostics.Current is { } diagnostics)
             await AttemptDiagnosticsStore.SaveAsync(db, extractionId, attemptId, diagnostics.Snapshot(), token);
+        await transaction.CommitAsync(token);
     }
     public async Task<bool> HasUnseenDocumentsAsync(CancellationToken token)
     {
