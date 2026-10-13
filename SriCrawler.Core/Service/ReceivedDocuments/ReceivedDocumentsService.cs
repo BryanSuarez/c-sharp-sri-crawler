@@ -116,7 +116,7 @@ public sealed class ReceivedDocumentsService(
             result.Pagination.PagesProcessed++;
             rowsVisited += snapshot.Rows.Count;
             if (progress is not null) await progress.PreparePageAsync(snapshot.Rows.Select(x => x.Result.Value?.Metadata.AuthorizationNumber)
-                .Where(x => x is { Length: 49 } && x.All(char.IsAsciiDigit)).Cast<string>().Distinct(StringComparer.Ordinal).ToArray(), token);
+                .Where(x => x is { Length: 49 } && x.All(char.IsAsciiDigit) && (query.SelectedAccessKeys == null || query.SelectedAccessKeys.Contains(x))).Cast<string>().Distinct(StringComparer.Ordinal).ToArray(), token);
             foreach (var row in snapshot.Rows)
             {
                 using var documentScope = ExtractionDiagnostics.DocumentScope(logger, expectedPage, row.RowIndex, ExtractionDiagnostics.Name(query.DownloadFormat));
@@ -126,6 +126,15 @@ public sealed class ReceivedDocumentsService(
                     result.Pagination.DuplicateCount++;
                     Error(ExtractionErrorCode.DuplicateDocument, "A document appeared more than once in this extraction.", row.RowIndex);
                     continue;
+                }
+                if (query.SelectedAccessKeys is not null)
+                {
+                    if (key is not { Length: 49 } || !key.All(char.IsAsciiDigit))
+                    {
+                        Error(ExtractionErrorCode.RowReadFailed, "A portal row could not be identified during the selected retry.", row.RowIndex);
+                        continue;
+                    }
+                    if (!query.SelectedAccessKeys.Contains(key)) continue;
                 }
                 token.ThrowIfCancellationRequested();
                 var document = key is { Length: 49 } && progress is not null

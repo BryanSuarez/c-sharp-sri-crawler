@@ -451,6 +451,15 @@ namespace DescagaCompronanteSRI.Persistence.Migrations
                     b.Property<bool>("QuerySucceeded")
                         .HasColumnType("boolean");
 
+                    b.Property<int?>("RetryMode")
+                        .HasColumnType("integer");
+
+                    b.Property<string>("RetrySelectionJson")
+                        .HasColumnType("jsonb");
+
+                    b.Property<Guid?>("SourceExtractionId")
+                        .HasColumnType("uuid");
+
                     b.Property<int>("Stage")
                         .HasColumnType("integer");
 
@@ -464,6 +473,12 @@ namespace DescagaCompronanteSRI.Persistence.Migrations
 
                     b.HasKey("Id");
 
+                    b.HasIndex("SourceExtractionId");
+
+                    b.HasIndex("CancellationRequestedAt", "Id")
+                        .HasDatabaseName("IX_extractions_pending_cancellation")
+                        .HasFilter("\"JobStatus\" = 5");
+
                     b.HasIndex("CompanyId", "ClientRequestId")
                         .IsUnique();
 
@@ -472,10 +487,6 @@ namespace DescagaCompronanteSRI.Persistence.Migrations
                     b.HasIndex("CompanyId", "JobStatus", "ExpiresAt");
 
                     b.HasIndex("CompanyId", "TaxpayerId", "CreatedAt");
-
-                    b.HasIndex("CancellationRequestedAt", "Id")
-                        .HasDatabaseName("IX_extractions_pending_cancellation")
-                        .HasFilter("\"JobStatus\" = 5");
 
                     b.ToTable("extractions", "crawler");
                 });
@@ -560,6 +571,14 @@ namespace DescagaCompronanteSRI.Persistence.Migrations
                         .HasForeignKey("ExtractionId")
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
+                });
+
+            modelBuilder.Entity("DescagaCompronanteSRI.Persistence.ExtractionRecord", b =>
+                {
+                    b.HasOne("DescagaCompronanteSRI.Persistence.ExtractionRecord", null)
+                        .WithMany()
+                        .HasForeignKey("SourceExtractionId")
+                        .OnDelete(DeleteBehavior.Restrict);
                 });
 
             modelBuilder.Entity("DescagaCompronanteSRI.Persistence.JobDispatch", b =>

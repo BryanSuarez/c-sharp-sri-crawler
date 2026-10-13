@@ -12,7 +12,7 @@ using Npgsql;
 
 namespace DescagaCompronanteSRI.Jobs;
 
-public sealed class ExtractionWorker(IDbContextFactory<CrawlerDbContext> factory, IReceivedExtractionRunner runner,
+public sealed partial class ExtractionWorker(IDbContextFactory<CrawlerDbContext> factory, IReceivedExtractionRunner runner,
     CredentialCipher cipher, ISriDocumentJsonParser parser, IDocumentStorage storage,
     IBackgroundJobClient jobs, IOptions<ExtractionJobOptions> options, ILogger<ExtractionWorker> logger, IDocumentValidator validator, IOptions<DescagaCompronanteSRI.Validation.DocumentValidationOptions> validationOptions, IDocumentReuseResolver? reuseResolver = null, TimeProvider? clock = null)
 {
@@ -59,13 +59,17 @@ public sealed class ExtractionWorker(IDbContextFactory<CrawlerDbContext> factory
             return;
         }
         var transientFailures = await db.Attempts.CountAsync(x => x.ExtractionId == extractionId && x.ErrorCode == "interrupted", cancellationToken);
-        if (record.ExpiresAt <= DateTimeOffset.UtcNow || record.EncryptedPassword is null || transientFailures >= 3)
+        if (record.ExpiresAt <= DateTimeOffset.UtcNow || (record.EncryptedPassword is null && record.RetryMode != SelectedRetryMode.Parsing) || transientFailures >= 3)
         {
             await FailAsync(db, record, "executionExpired", cancellationToken);
             await startTransaction.CommitAsync(cancellationToken);
             return;
         }
-        var query = ExtractionJobs.Deserialize<ReceivedDocumentsQuery>(record.QueryJson) with { Password = cipher.Decrypt(record.EncryptedPassword, record.Id), DownloadPolicy = record.DownloadPolicy };
+        var query = ExtractionJobs.Deserialize<ReceivedDocumentsQuery>(record.QueryJson) with { Password = record.EncryptedPassword is null ? "" : cipher.Decrypt(record.EncryptedPassword, record.Id), DownloadPolicy = record.DownloadPolicy };
+        var selectedIds = record.RetrySelectionJson is null ? Array.Empty<long>() : ExtractionJobs.Deserialize<long[]>(record.RetrySelectionJson);
+        if (record.RetryMode == SelectedRetryMode.Download)
+            query = query with { SelectedAccessKeys = (await db.Results.AsNoTracking().Where(x => x.ExtractionId == record.SourceExtractionId && selectedIds.Contains(x.Id))
+                .Select(x => x.Identity).ToListAsync(cancellationToken)).ToHashSet(StringComparer.Ordinal) };
         using var queryScope = ExtractionDiagnostics.SafeScope(logger, new Dictionary<string, object> {
             ["year"] = query.Year, ["month"] = query.Month,
             ["documentType"] = ExtractionDiagnostics.Name(query.DocumentType), ["format"] = ExtractionDiagnostics.Name(query.DownloadFormat) });
@@ -75,7 +79,7 @@ public sealed class ExtractionWorker(IDbContextFactory<CrawlerDbContext> factory
         record.AttemptCount++;
         record.ActiveAttemptId = attemptId;
         record.JobStatus = JobStatus.Running;
-        record.Stage = ExtractionStage.Login;
+        record.Stage = record.RetryMode == SelectedRetryMode.Parsing ? ExtractionStage.Processing : ExtractionStage.Login;
         record.StartedAt ??= DateTimeOffset.UtcNow;
         record.LastActivityAt = DateTimeOffset.UtcNow;
         record.PaginationJson = ExtractionJobs.Serialize(new PaginationProgress());
@@ -86,7 +90,7 @@ public sealed class ExtractionWorker(IDbContextFactory<CrawlerDbContext> factory
         var diagnostics = new ExtractionDiagnostics(clock ?? TimeProvider.System, logger);
         using var diagnosticsScope = diagnostics.Enter(extractionId, record.CompanyId, attemptId, record.AttemptCount);
         await AttemptDiagnosticsStore.SaveAsync(db, extractionId, attemptId, diagnostics.Snapshot(), cancellationToken);
-        ExtractionDiagnostics.Event(logger, LogLevel.Information, DiagnosticEvent.AttemptStarted, stage: ExtractionStage.Login);
+        ExtractionDiagnostics.Event(logger, LogLevel.Information, DiagnosticEvent.AttemptStarted, stage: record.Stage);
         using var execution = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         var deadline = DateTimeOffset.UtcNow.AddHours(options.Value.AttemptTimeoutHours);
         execution.CancelAfter(TimeSpan.FromHours(options.Value.AttemptTimeoutHours));
@@ -95,7 +99,11 @@ public sealed class ExtractionWorker(IDbContextFactory<CrawlerDbContext> factory
         var progress = new PersistentExtractionProgress(factory, parser, storage, extractionId, attemptId, query, validator, validationOptions, reuseResolver);
         try
         {
-            var response = await runner.RunAsync(query, progress, execution.Token);
+            var response = record.RetryMode == SelectedRetryMode.Parsing
+                ? await RunParsingRetryAsync(record, selectedIds, progress, execution.Token)
+                : await runner.RunAsync(query, progress, execution.Token);
+            if (record.RetryMode == SelectedRetryMode.Download && response.QuerySucceeded)
+                await RecordUnseenSelectionsAsync(record, selectedIds, progress, response, execution.Token);
             if (await progress.HasUnseenDocumentsAsync(execution.Token))
             {
                 response.Pagination.Status = PaginationStatus.Incomplete;
@@ -103,7 +111,7 @@ public sealed class ExtractionWorker(IDbContextFactory<CrawlerDbContext> factory
             }
             await progress.CheckpointAsync(response, execution.Token);
             diagnostics.Finish(DiagnosticsCoverage.Complete, response.Status is ExtractionStatus.Completed or ExtractionStatus.NoDocuments ? DiagnosticOutcome.Succeeded : DiagnosticOutcome.Failed);
-            if (!await CompleteAsync(extractionId, attemptId, JobStatus.Completed, null, execution.Token)) return;
+            if (!await CompleteAsync(extractionId, attemptId, JobStatus.Completed, null, execution.Token, record.RetryMode == SelectedRetryMode.Parsing && response.Status != ExtractionStatus.Completed)) return;
             ExtractionDiagnostics.Event(logger, LogLevel.Information, DiagnosticEvent.AttemptFinished, durationMs: diagnostics.Snapshot().ActiveDurationMs,
                 outcome: response.Status is ExtractionStatus.Completed or ExtractionStatus.NoDocuments ? DiagnosticOutcome.Succeeded : DiagnosticOutcome.Failed, detail: ExtractionDiagnostics.Name(response.Status));
         }
@@ -234,7 +242,7 @@ public sealed class ExtractionWorker(IDbContextFactory<CrawlerDbContext> factory
             ErrorJson = ExtractionJobs.Serialize(new { code, message = "The extraction can no longer execute." }) });
         await db.SaveChangesAsync(token);
     }
-    private async Task<bool> CompleteAsync(Guid id, Guid attempt, JobStatus status, string? errorCode, CancellationToken token)
+    private async Task<bool> CompleteAsync(Guid id, Guid attempt, JobStatus status, string? errorCode, CancellationToken token, bool retryParsingFailed = false)
     {
         await using var db = await factory.CreateDbContextAsync(token);
         await using var transaction = await db.Database.BeginTransactionAsync(token);
@@ -255,8 +263,9 @@ public sealed class ExtractionWorker(IDbContextFactory<CrawlerDbContext> factory
         var saved = await rows.CountAsync(x => x.DownloadStatus == DocumentDownloadStatus.Downloaded, token);
         var pagination = ExtractionJobs.Deserialize<PaginationProgress>(e.PaginationJson);
         if (status == JobStatus.Failed) pagination.Status = PaginationStatus.Incomplete;
-        var complete = pagination.Status == PaginationStatus.Completed;
-        e.ExtractionStatus = saved > 0 ? complete && total == saved ? ExtractionStatus.Completed : ExtractionStatus.Partial
+        var complete = status == JobStatus.Completed && (e.RetryMode == SelectedRetryMode.Parsing || pagination.Status == PaginationStatus.Completed);
+        var parsingFailures = e.RetryMode == SelectedRetryMode.Parsing ? await rows.CountAsync(x => x.JsonStatus != DocumentParseStatus.Parsed, token) : 0;
+        e.ExtractionStatus = saved > 0 ? complete && total == saved && parsingFailures == 0 && !retryParsingFailed ? ExtractionStatus.Completed : ExtractionStatus.Partial
             : complete && total == 0 ? ExtractionStatus.NoDocuments : ExtractionStatus.Failed;
         e.PaginationJson = ExtractionJobs.Serialize(pagination);
         e.JobStatus = status;

@@ -13,7 +13,7 @@ using Npgsql;
 
 namespace DescagaCompronanteSRI.Jobs;
 
-public sealed class ExtractionJobs(CrawlerDbContext db, CredentialCipher cipher,
+public sealed partial class ExtractionJobs(CrawlerDbContext db, CredentialCipher cipher,
     IOptions<ExtractionJobOptions> options, ILogger<ExtractionJobs>? logger = null, TimeProvider? clock = null) : IExtractionJobs
 {
     public static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
@@ -66,11 +66,16 @@ public sealed class ExtractionJobs(CrawlerDbContext db, CredentialCipher cipher,
         catch (Exception e) when (e is NpgsqlException or DbUpdateException) { throw new PersistenceUnavailableException(); }
     }
 
-    public async Task<ExtractionAccepted> AcceptAsync(ReceivedDocumentsQuery query, Guid? requestId, CancellationToken token)
+    public Task<ExtractionAccepted> AcceptAsync(ReceivedDocumentsQuery query, Guid? requestId, CancellationToken token) =>
+        AcceptCoreAsync(query, requestId, token);
+
+    private async Task<ExtractionAccepted> AcceptCoreAsync(ReceivedDocumentsQuery query, Guid? requestId, CancellationToken token,
+        Guid? sourceId = null, SelectedRetryMode? mode = null, long[]? selectedIds = null)
     {
         var safeQuery = query with { Password = "" };
         var queryJson = Serialize(safeQuery);
-        var fingerprint = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(queryJson)));
+        var identity = sourceId is null ? queryJson : Serialize(new { sourceId, mode, selectedIds });
+        var fingerprint = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(identity)));
         try
         {
             await using var transaction = await db.Database.BeginTransactionAsync(token);
@@ -83,14 +88,17 @@ public sealed class ExtractionJobs(CrawlerDbContext db, CredentialCipher cipher,
                     x => x.CompanyId == query.CompanyId && x.ClientRequestId == requestId, token);
                 if (previous is not null) return Match(previous, fingerprint);
             }
+            var source = sourceId is Guid parent ? await ValidateSelectionAsync(parent, query.CompanyId, mode!.Value, selectedIds!, token) : null;
             var id = Guid.NewGuid();
             var now = (clock ?? TimeProvider.System).GetUtcNow();
             await CompanyWorkload.CheckAdmissionAsync(db, query.CompanyId, options.Value, now, token);
             var extraction = new ExtractionRecord
             {
                 Id = id, CompanyId = query.CompanyId, TaxpayerId = query.User,
+                BusinessName = source?.BusinessName ?? "",
+                SourceExtractionId = sourceId, RetryMode = mode, RetrySelectionJson = selectedIds is null ? null : Serialize(selectedIds),
                 DownloadPolicy = query.DownloadPolicy, ClientRequestId = requestId, Fingerprint = fingerprint, QueryJson = queryJson,
-                EncryptedPassword = cipher.Encrypt(query.Password, id), CreatedAt = now,
+                EncryptedPassword = mode == SelectedRetryMode.Parsing ? null : cipher.Encrypt(query.Password, id), CreatedAt = now,
                 ExpiresAt = now.AddHours(options.Value.CredentialLifetimeHours),
                 JobStatus = JobStatus.Queued, Stage = ExtractionStage.Queued,
                 PaginationJson = Serialize(new PaginationProgress())
@@ -127,6 +135,10 @@ public sealed class ExtractionJobs(CrawlerDbContext db, CredentialCipher cipher,
         {
             using var scope = ExtractionDiagnostics.SafeScope(logger, new Dictionary<string, object> { ["extractionId"] = record.Id, ["companyId"] = record.CompanyId });
             ExtractionDiagnostics.Event(logger, LogLevel.Information, existing ? DiagnosticEvent.IdempotentMatch : DiagnosticEvent.Accepted, stage: record.Stage);
+            if (record.SourceExtractionId is Guid parent)
+                ExtractionDiagnostics.Safely(() => logger.LogInformation(new EventId(1430, "SelectedRetryAccepted"),
+                    "Selected retry for source {sourceExtractionId}, mode {retryMode}, count {selectedCount}, repeated {repeated}.",
+                    parent, record.RetryMode, Deserialize<long[]>(record.RetrySelectionJson!).Length, existing));
         }
         return Accepted(record);
     }
@@ -161,7 +173,7 @@ public sealed class ExtractionJobs(CrawlerDbContext db, CredentialCipher cipher,
         var saved = counts?.Saved ?? 0;
         return new(e.Id, e.CompanyId, e.TaxpayerId, e.JobStatus, e.ExtractionStatus, e.Stage, e.AttemptCount,
             e.CreatedAt, e.StartedAt, e.FinishedAt, e.LastActivityAt, count, saved, count - saved,
-            counts?.ConversionFailed ?? 0, counts?.Unsupported ?? 0, Deserialize<PaginationProgress>(e.PaginationJson), counts?.ValidationIssues ?? 0, counts?.MetadataIssues ?? 0, saved - (counts?.Reused ?? 0), counts?.Reused ?? 0, await AttemptDiagnosticsStore.SummaryAsync(db, e, token), e.CancellationRequestedAt, e.CancelledAt);
+            counts?.ConversionFailed ?? 0, counts?.Unsupported ?? 0, Deserialize<PaginationProgress>(e.PaginationJson), counts?.ValidationIssues ?? 0, counts?.MetadataIssues ?? 0, saved - (counts?.Reused ?? 0), counts?.Reused ?? 0, await AttemptDiagnosticsStore.SummaryAsync(db, e, token), e.CancellationRequestedAt, e.CancelledAt, e.SourceExtractionId is Guid parent ? new SelectedRetryInfo(parent, e.RetryMode!.Value, Deserialize<long[]>(e.RetrySelectionJson!).Length) : null);
     }
     public async Task<CursorPage<ExtractionAttemptSummary>?> AttemptsAsync(Guid id, string companyId, long cursor, int limit, CancellationToken token)
     {

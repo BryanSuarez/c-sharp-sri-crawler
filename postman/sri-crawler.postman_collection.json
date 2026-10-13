@@ -1665,7 +1665,124 @@
       ]
     },
     {
-      "name": "05 - Revoke the test credential (run last)",
+      "name": "05 - Selected failure retries (optional; configure selection first)",
+      "item": [
+        {
+          "name": "Retry selected download failures (202; optional)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "XApiKey",
+                "value": "{{companyApiKey}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/received-documents/extractions/{{sourceExtractionId}}/retries?companyId={{companyId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "received-documents",
+                "extractions",
+                "{{sourceExtractionId}}",
+                "retries"
+              ],
+              "query": [
+                {
+                  "key": "companyId",
+                  "value": "{{companyId}}"
+                }
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"mode\": \"download\",\n  \"documentIds\": {{retryDocumentIds}},\n  \"password\": \"{{sriPassword}}\",\n  \"clientRequestId\": \"{{$guid}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "description": "Set sourceExtractionId to a terminal extraction and set retryDocumentIds to a JSON array of numeric failed RESULT IDs. Source history is preserved. Copy the returned extractionId to follow the child. A fresh generated clientRequestId creates independent work; pin a UUID to test idempotency. Parsing uses no SRI password or browser."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Accepted\", () => pm.response.to.have.status(202));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Retry selected parsing failures (202; optional)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "XApiKey",
+                "value": "{{companyApiKey}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/received-documents/extractions/{{sourceExtractionId}}/retries?companyId={{companyId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "received-documents",
+                "extractions",
+                "{{sourceExtractionId}}",
+                "retries"
+              ],
+              "query": [
+                {
+                  "key": "companyId",
+                  "value": "{{companyId}}"
+                }
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"mode\": \"parsing\",\n  \"documentIds\": {{retryDocumentIds}},\n  \"clientRequestId\": \"{{$guid}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "description": "Set sourceExtractionId to a terminal extraction and set retryDocumentIds to a JSON array of numeric failed RESULT IDs. Source history is preserved. Copy the returned extractionId to follow the child. A fresh generated clientRequestId creates independent work; pin a UUID to test idempotency. Parsing uses no SRI password or browser."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Accepted\", () => pm.response.to.have.status(202));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "06 - Revoke the test credential (run last)",
       "description": "After these checks, create a new company credential to continue normal testing.",
       "item": [
         {
@@ -1828,6 +1945,18 @@
           ]
         }
       ]
+    }
+  ],
+  "variable": [
+    {
+      "key": "sourceExtractionId",
+      "value": "REPLACE_WITH_SOURCE_EXTRACTION_ID",
+      "type": "string"
+    },
+    {
+      "key": "retryDocumentIds",
+      "value": "[]",
+      "type": "string"
     }
   ]
 }

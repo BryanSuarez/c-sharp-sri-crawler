@@ -44,7 +44,7 @@ public sealed class JobDispatcher(IServiceScopeFactory scopes, IOptions<Extracti
             var next = await (from dispatch in db.Dispatches
                 join extraction in db.Extractions on dispatch.ExtractionId equals extraction.Id
                 where dispatch.DispatchedAt == null && extraction.JobStatus == JobStatus.Queued
-                    && extraction.ExpiresAt > now && extraction.EncryptedPassword != null
+                    && extraction.ExpiresAt > now && (extraction.EncryptedPassword != null || extraction.RetryMode == SelectedRetryMode.Parsing)
                     && reserved.Count(x => x.CompanyId == extraction.CompanyId) < options.Value.MaxConcurrentPerCompany
                 let lastTurn = (from previous in db.Dispatches
                     join owner in db.Extractions on previous.ExtractionId equals owner.Id
@@ -71,7 +71,7 @@ public sealed class JobDispatcher(IServiceScopeFactory scopes, IOptions<Extracti
             // Active account locks still guard paused/live workers. Avoid dispatching on every poll.
             job.LastActivityAt = now;
         }
-        var expired = await db.Extractions.Where(x => x.ExpiresAt <= now && x.EncryptedPassword != null).OrderBy(x => x.ExpiresAt).ThenBy(x => x.Id).Take(100).ToListAsync(token);
+        var expired = await db.Extractions.Where(x => x.ExpiresAt <= now && (x.EncryptedPassword != null || (x.RetryMode == SelectedRetryMode.Parsing && (x.JobStatus == JobStatus.Queued || x.JobStatus == JobStatus.Retrying || x.JobStatus == JobStatus.Running)))).OrderBy(x => x.ExpiresAt).ThenBy(x => x.Id).Take(100).ToListAsync(token);
         foreach (var candidate in expired)
         {
             var job = (await ExtractionLifecycle.LockAsync(db, candidate.Id, token))!;
