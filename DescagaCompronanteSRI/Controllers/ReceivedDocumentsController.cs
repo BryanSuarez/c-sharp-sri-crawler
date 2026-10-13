@@ -9,10 +9,14 @@ using DescagaCompronanteSRI.Validation;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Options;
 using Npgsql;
+using DescagaCompronanteSRI.ApiSecurity;
+using DescagaCompronanteSRI.Security;
+using Microsoft.AspNetCore.Authorization;
 
 namespace DescagaCompronanteSRI.Controllers;
 
 [ApiController]
+[Authorize(Policy = ApiAccess.CompanyPolicy)]
 [Route("api/received-documents")]
 public sealed class ReceivedDocumentsController(IExtractionJobs jobs, IOptions<ExtractionJobOptions> options) : ControllerBase
 {
@@ -26,6 +30,7 @@ public sealed class ReceivedDocumentsController(IExtractionJobs jobs, IOptions<E
     [ProducesResponseType(StatusCodes.Status503ServiceUnavailable)]
     public async Task<IActionResult> Query([FromBody] ReceivedDocumentsQueryRequest request, CancellationToken token)
     {
+        if (!ApiAccess.CanAccess(User, request.CompanyId)) return Forbid();
         if (!SriRequestValidator.TryNormalizeTaxpayerId(request.User, out var taxpayerId, out _))
             ModelState.AddModelError("user", "User must contain 10 or 13 digits.");
         if (!SriRequestValidator.TryValidateReceivedDate(request.Year!.Value.ToString(CultureInfo.InvariantCulture),
@@ -34,7 +39,7 @@ public sealed class ReceivedDocumentsController(IExtractionJobs jobs, IOptions<E
         if (!ModelState.IsValid) return ValidationProblem(ModelState);
         var query = new ReceivedDocumentsQuery
         {
-            CompanyId = request.CompanyId, User = taxpayerId, AdditionalUser = string.IsNullOrWhiteSpace(request.AdditionalUser) ? null : request.AdditionalUser.Trim(),
+            CompanyId = ApiAccess.Company(User, request.CompanyId), User = taxpayerId, AdditionalUser = string.IsNullOrWhiteSpace(request.AdditionalUser) ? null : request.AdditionalUser.Trim(),
             Password = request.Password, Year = request.Year.Value, Month = request.Month.Value, Day = request.Day.Value,
             DocumentType = request.DocumentType!.Value, DownloadFormat = request.DownloadFormat!.Value, DownloadPolicy = request.DownloadPolicy
         };
@@ -62,6 +67,8 @@ public sealed class ReceivedDocumentsController(IExtractionJobs jobs, IOptions<E
     [ProducesResponseType(typeof(ExtractionSummary), 200)]
     public async Task<IActionResult> Status(Guid id, [FromQuery] string companyId, CancellationToken token)
     {
+        if (!ApiAccess.CanAccess(User, companyId)) return NotFound();
+        companyId = ApiAccess.Company(User, companyId);
         var result = await jobs.GetAsync(id, companyId, token);
         return result is null ? NotFound() : Ok(result);
     }
@@ -71,6 +78,8 @@ public sealed class ReceivedDocumentsController(IExtractionJobs jobs, IOptions<E
     public async Task<IActionResult> Attempts(Guid id, [FromQuery] string companyId, CancellationToken token,
         [FromQuery] long cursor = 0, [FromQuery] int limit = 100)
     {
+        if (!ApiAccess.CanAccess(User, companyId)) return NotFound();
+        companyId = ApiAccess.Company(User, companyId);
         if (cursor < 0 || limit is < 1 or > 500) return BadRequest(new { message = "Invalid cursor or limit." });
         var result = await jobs.AttemptsAsync(id, companyId, cursor, limit, token);
         return result is null ? NotFound() : Ok(result);
@@ -80,6 +89,8 @@ public sealed class ReceivedDocumentsController(IExtractionJobs jobs, IOptions<E
     public async Task<IActionResult> Documents(Guid id, [FromQuery] string companyId, CancellationToken token,
         [FromQuery] long cursor = 0, [FromQuery] int limit = 100)
     {
+        if (!ApiAccess.CanAccess(User, companyId)) return NotFound();
+        companyId = ApiAccess.Company(User, companyId);
         if (cursor < 0 || limit is < 1 or > 500) return BadRequest(new { message = "Invalid cursor or limit." });
         var result = await jobs.DocumentsAsync(id, companyId, cursor, limit, token);
         return result is null ? NotFound() : Ok(result);
@@ -87,6 +98,8 @@ public sealed class ReceivedDocumentsController(IExtractionJobs jobs, IOptions<E
     [HttpGet("extractions/{id:guid}/documents/{documentId:long}")]
     public async Task<IActionResult> Document(Guid id, long documentId, [FromQuery] string companyId, CancellationToken token)
     {
+        if (!ApiAccess.CanAccess(User, companyId)) return NotFound();
+        companyId = ApiAccess.Company(User, companyId);
         var result = await jobs.DocumentAsync(id, companyId, documentId, token);
         return result is null ? NotFound() : Ok(result);
     }
@@ -95,8 +108,26 @@ public sealed class ReceivedDocumentsController(IExtractionJobs jobs, IOptions<E
     public async Task<IActionResult> Errors(Guid id, [FromQuery] string companyId, CancellationToken token,
         [FromQuery] long cursor = 0, [FromQuery] int limit = 100)
     {
+        if (!ApiAccess.CanAccess(User, companyId)) return NotFound();
+        companyId = ApiAccess.Company(User, companyId);
         if (cursor < 0 || limit is < 1 or > 500) return BadRequest(new { message = "Invalid cursor or limit." });
         var result = await jobs.ErrorsAsync(id, companyId, cursor, limit, token);
         return result is null ? NotFound() : Ok(result);
+    }
+    [HttpGet("extractions/{id:guid}/documents/{documentId:long}/file")]
+    [ProducesResponseType(200)]
+    [ProducesResponseType(404)]
+    [ProducesResponseType(503)]
+    public async Task<IActionResult> DownloadFile(Guid id, long documentId, [FromQuery] string companyId,
+        [FromServices] IExtractionDocumentFiles files, CancellationToken token)
+    {
+        if (!ApiAccess.CanAccess(User, companyId)) return NotFound();
+        var result = await files.OpenAsync(id, documentId, ApiAccess.Company(User, companyId), token);
+        return result.Status switch
+        {
+            DocumentFileAccessStatus.Available => File(result.Content!, result.ContentType!, result.FileName!),
+            DocumentFileAccessStatus.NotFound => NotFound(),
+            _ => StatusCode(503, new { code = "storageUnavailable", message = "The stored file is temporarily unavailable." })
+        };
     }
 }

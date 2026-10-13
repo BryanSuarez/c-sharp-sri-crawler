@@ -4,6 +4,7 @@ namespace DescagaCompronanteSRI.Persistence;
 
 public sealed class CrawlerDbContext(DbContextOptions<CrawlerDbContext> options) : DbContext(options)
 {
+    public DbSet<CompanyApiKey> ApiKeys => Set<CompanyApiKey>();
     public DbSet<ExtractionRecord> Extractions => Set<ExtractionRecord>();
     public DbSet<ExtractionAttempt> Attempts => Set<ExtractionAttempt>();
     public DbSet<DocumentRecord> Documents => Set<DocumentRecord>();
@@ -15,6 +16,10 @@ public sealed class CrawlerDbContext(DbContextOptions<CrawlerDbContext> options)
     protected override void OnModelCreating(ModelBuilder model)
     {
         model.HasDefaultSchema("crawler");
+        model.Entity<CompanyApiKey>().ToTable("api_keys");
+        model.Entity<CompanyApiKey>().HasIndex(x => x.PublicId).IsUnique();
+        model.Entity<CompanyApiKey>().HasIndex(x => new { x.CompanyId, x.Id });
+        model.Entity<CompanyApiKey>().Property(x => x.Name).HasMaxLength(100);
         model.Entity<ExtractionRecord>().ToTable("extractions");
         model.Entity<ExtractionRecord>().Property(x => x.DownloadPolicy).HasDefaultValue(DescagaCompronanteSRI.Models.Enums.DownloadPolicy.Refresh).HasSentinel(DescagaCompronanteSRI.Models.Enums.DownloadPolicy.Refresh);
         model.Entity<ExtractionRecord>().HasIndex(e => new { e.CompanyId, e.ClientRequestId }).IsUnique();

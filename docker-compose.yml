@@ -39,14 +39,14 @@ services:
     build:
       context: .
       target: api
-    ports: ["8080:8080"]
+    ports: ["127.0.0.1:8080:8080"]
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8080/health"]
       interval: 15s
       timeout: 5s
       start_period: 30s
       retries: 3
-    env_file: [.env.storage, .env.jobs]
+    env_file: [.env.storage, .env.jobs, .env.security]
     environment:
       ExtractionJobs__ConnectionString: "Host=postgres;Database=sri;Username=sri;Password=${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env.jobs and use --env-file .env.jobs}"
       ASPNETCORE_ENVIRONMENT: Production

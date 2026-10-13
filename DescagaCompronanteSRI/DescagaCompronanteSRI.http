@@ -1,5 +1,8 @@
 @HostAddress = http://localhost:5276
 @CompanyId = acme
+@CompanyApiKey = REPLACE_WITH_COMPANY_API_KEY
+@AdministratorApiKey = REPLACE_WITH_ADMINISTRATOR_API_KEY
+@ApiKeyId = REPLACE_WITH_PUBLIC_KEY_ID
 @SriUser = TU_RUC
 @SriPassword = TU_PASSWORD_SRI
 @ExtractionId = REPLACE_WITH_EXTRACTION_ID
@@ -11,6 +14,7 @@
 # Inspect newlyDownloadedCount/reusedCount and per-document acquisitionSource.
 # Default async response is HTTP 202. Poll the status URL until terminal.
 POST {{HostAddress}}/api/received-documents/query
+XApiKey: {{CompanyApiKey}}
 Content-Type: application/json
 
 {
@@ -29,6 +33,7 @@ Content-Type: application/json
 ### Query received documents across all verifiable pages (PDF)
 # Use a real period with more than 50 documents to validate against the SRI portal.
 POST {{HostAddress}}/api/received-documents/query
+XApiKey: {{CompanyApiKey}}
 Content-Type: application/json
 
 {
@@ -45,6 +50,7 @@ Content-Type: application/json
 
 ### Force a fresh SRI download (use a new clientRequestId or omit it)
 POST {{HostAddress}}/api/received-documents/query
+XApiKey: {{CompanyApiKey}}
 Content-Type: application/json
 
 {
@@ -62,22 +68,27 @@ Content-Type: application/json
 ### Status and summary (includes confirmed timings and measurement coverage)
 # Inspect validationIssueCount and metadataIssueCount separately from failedCount.
 GET {{HostAddress}}/api/received-documents/extractions/{{ExtractionId}}?companyId={{CompanyId}}
+XApiKey: {{CompanyApiKey}}
 
 ### Paginated document results (payload excluded)
 # Each item includes validation, storageStatus and metadataParseStatus.
 # Metadata amounts can be null; issuedDate/authorizedAtIso accompany the original dates.
 GET {{HostAddress}}/api/received-documents/extractions/{{ExtractionId}}/documents?companyId={{CompanyId}}&limit=100
+XApiKey: {{CompanyApiKey}}
 
 ### Document detail with versioned JSON
 # validation includes status, identityStatus, validatorVersion, checks, sizeBytes and sha256.
 # Rejected files have storageStatus=notAttempted; parsing errors do not invalidate saved files.
 GET {{HostAddress}}/api/received-documents/extractions/{{ExtractionId}}/documents/{{DocumentId}}?companyId={{CompanyId}}
+XApiKey: {{CompanyApiKey}}
 
 ### Paginated errors
 GET {{HostAddress}}/api/received-documents/extractions/{{ExtractionId}}/errors?companyId={{CompanyId}}&limit=100
+XApiKey: {{CompanyApiKey}}
 
 ### Small-account synchronous wait (falls back to 202 after configured limit)
 POST {{HostAddress}}/api/received-documents/query
+XApiKey: {{CompanyApiKey}}
 Content-Type: application/json
 
 {
@@ -92,7 +103,7 @@ Content-Type: application/json
   "executionMode": "sync"
 }
 
-### Consultar comprobantes emitidos (PDF)
+### Issued documents (explicit localDevelopment mode only)
 POST {{HostAddress}}/api/SriEmitidos/consultar
 accept: */*
 Content-Type: application/json
@@ -107,9 +118,29 @@ Content-Type: application/json
   "dia": 25
 }
 
-### Descargar PDF emitido guardado
+### Download issued PDF (explicit localDevelopment mode only)
 GET {{HostAddress}}/api/SriEmitidos/descargar/{{SriUser}}/{{SriAccessKey}}
 accept: application/pdf
 
 ### Attempt history and stage/operation timings (cursor is the last attempt number)
 GET {{HostAddress}}/api/received-documents/extractions/{{ExtractionId}}/attempts?companyId={{CompanyId}}&limit=100&cursor=0
+XApiKey: {{CompanyApiKey}}
+
+### Create a company credential (returned once; store privately)
+POST {{HostAddress}}/api/admin/companies/{{CompanyId}}/api-keys
+XApiKey: {{AdministratorApiKey}}
+Content-Type: application/json
+
+{ "name": "Laravel integration" }
+
+### List company credentials (secrets and hashes excluded)
+GET {{HostAddress}}/api/admin/companies/{{CompanyId}}/api-keys?limit=100
+XApiKey: {{AdministratorApiKey}}
+
+### Revoke a company credential
+DELETE {{HostAddress}}/api/admin/companies/{{CompanyId}}/api-keys/{{ApiKeyId}}
+XApiKey: {{AdministratorApiKey}}
+
+### Download the registered XML/PDF through authorized storage access
+GET {{HostAddress}}/api/received-documents/extractions/{{ExtractionId}}/documents/{{DocumentId}}/file?companyId={{CompanyId}}
+XApiKey: {{CompanyApiKey}}

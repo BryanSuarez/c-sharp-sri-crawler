@@ -384,3 +384,7 @@ improvements.md
 .env.jobs
 **/.env.jobs
 **/dist/
+
+# Private API credentials
+**/.env.security
+.secrets/

@@ -3,7 +3,6 @@ using DescagaCompronanteSRI.Jobs;
 using DescagaCompronanteSRI.Persistence;
 using Microsoft.EntityFrameworkCore;
 using Hangfire;
-using Microsoft.Extensions.FileProviders;
 using Microsoft.OpenApi.Models;
 using DescagaCompronanteSRI.Contracts;
 using DescagaCompronanteSRI.Services;
@@ -11,6 +10,9 @@ using DescagaCompronanteSRI.Services.ReceivedDocuments;
 using DescagaCompronanteSRI.Models.Enums;
 using Microsoft.OpenApi.Any;
 using DescagaCompronanteSRI.Services.Storage;
+using DescagaCompronanteSRI.ApiSecurity;
+using DescagaCompronanteSRI.Security;
+using Microsoft.Extensions.Options;
 
 var builder = WebApplication.CreateBuilder(new WebApplicationOptions
 {
@@ -23,6 +25,7 @@ builder.Logging.AddExtractionJsonConsole();
 
 StorageConfiguration.AddStorageEnvironmentFile(builder.Configuration, builder.Environment);
 JobRegistration.AddJobEnvironmentFile(builder.Configuration, builder.Environment);
+ApiSecurityRegistration.AddSecurityEnvironmentFile(builder.Configuration, builder.Environment);
 
 builder.WebHost.ConfigureKestrel(options =>
 {
@@ -47,6 +50,8 @@ builder.Services.AddEndpointsApiExplorer();
 
 builder.Services.AddReceivedCrawler();
 builder.Services.AddExtractionJobs(builder.Configuration);
+builder.Services.AddApiSecurity(args.Contains("--migrate"));
+builder.Services.AddScoped<IExtractionDocumentFiles, ExtractionDocumentFiles>();
 
 builder.Services.AddScoped<IIssuedDocumentsService, ConsultaComprobantesEmitidosService>();
 
@@ -54,6 +59,7 @@ builder.Services.AddScoped<IIssuedDocumentsService, ConsultaComprobantesEmitidos
 
 builder.Services.AddSwaggerGen(c =>
 {
+    c.MapType<ApiKeyState>(() => EnumSchema<ApiKeyState>());
     c.MapType<DiagnosticsCoverage>(() => EnumSchema<DiagnosticsCoverage>());
     c.MapType<DownloadPolicy>(() => EnumSchema<DownloadPolicy>());
     c.MapType<DocumentAcquisitionSource>(() => EnumSchema<DocumentAcquisitionSource>());
@@ -75,22 +81,13 @@ builder.Services.AddSwaggerGen(c =>
     c.SwaggerDoc("v1", new OpenApiInfo { Title = "Descarga de Comprobantes", Version = "v1" });
     c.AddSecurityDefinition("ApiKey", new OpenApiSecurityScheme
     {
-        Description = "ApiKey must appear in header",
+        Description = "Server-side credential: administrator for key management, company key for received documents.",
         Type = SecuritySchemeType.ApiKey,
         Name = "XApiKey",
         In = ParameterLocation.Header,
         Scheme = "ApiKeyScheme"
     });
-    var key = new OpenApiSecurityScheme
-    {
-        Reference = new OpenApiReference
-        {
-            Type = ReferenceType.SecurityScheme,
-            Id = "ApiKey"
-        },
-        In = ParameterLocation.Header
-    };
-    c.AddSecurityRequirement(new OpenApiSecurityRequirement { { key, new List<string>() } });
+    c.OperationFilter<ApiSecurityOperationFilter>();
 });
 
 builder.Services.AddHttpClient("sri", c =>
@@ -105,26 +102,19 @@ if (args.Contains("--migrate"))
     await scope.ServiceProvider.GetRequiredService<CrawlerDbContext>().Database.MigrateAsync();
     return;
 }
-if (app.Services.GetRequiredService<Microsoft.Extensions.Options.IOptions<ExtractionJobOptions>>().Value.DashboardEnabled)
-    app.UseHangfireDashboard("/hangfire");
 app.MapGet("/health", async (CrawlerDbContext db, CancellationToken token) =>
-    await db.Database.CanConnectAsync(token) ? Results.Ok(new { status = "ready" }) : Results.StatusCode(503));
+    await db.Database.CanConnectAsync(token) ? Results.Ok(new { status = "ready" }) : Results.StatusCode(503)).AllowAnonymous();
 
-app.UseSwagger();
-app.UseSwaggerUI();
-
-Directory.CreateDirectory(Path.Combine(builder.Environment.ContentRootPath, "wwwroot"));
-var fileProvider = new PhysicalFileProvider(
-    Path.Combine(builder.Environment.ContentRootPath, "wwwroot")
-);
-
-app.UseStaticFiles(new StaticFileOptions
+if (ApiAccess.IsLocal(app.Services.GetRequiredService<IOptions<ApiSecurityOptions>>().Value, app.Environment))
 {
-    FileProvider = fileProvider,
-    RequestPath = ""
-});
+    app.UseSwagger();
+    app.UseSwaggerUI(options => options.ConfigObject.PersistAuthorization = false);
+    if (app.Services.GetRequiredService<IOptions<ExtractionJobOptions>>().Value.DashboardEnabled)
+        app.UseHangfireDashboard("/hangfire");
+}
 
 app.UseHttpsRedirection();
+app.UseAuthentication();
 app.UseAuthorization();
 app.MapControllers();
 

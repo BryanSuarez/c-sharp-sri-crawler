@@ -43,6 +43,7 @@ public sealed class MigrationCompatibilityTests
                 VALUES ({attempt}, {id}, 1, NOW(), NOW())
                 """);
             await db.Database.MigrateAsync();
+            Assert.Empty(await db.ApiKeys.ToListAsync());
             var oldAttempt = await db.Attempts.SingleAsync(x => x.Id == attempt);
             Assert.Null(oldAttempt.DiagnosticsJson); Assert.Null(oldAttempt.DiagnosticsVersion);
             Assert.Equal(0, oldAttempt.DiagnosticsSequence); Assert.Null(oldAttempt.DiagnosticsUpdatedAt);

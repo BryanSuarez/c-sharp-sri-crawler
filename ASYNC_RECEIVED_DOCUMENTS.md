@@ -100,7 +100,7 @@ GET /api/received-documents/extractions/{id}/errors?companyId=acme&limit=100
 
 Cursors are stable result IDs; default limit is 100 and maximum is 500. The listing includes access keys but excludes large parsed payloads. Detail includes legacy `document.parsedDocument`, new `documentJson`, conversion status and parser/version/hash information. `documentId` in these routes is the extraction-result ID, including unreadable rows. Summary never contains the complete list of documents or errors.
 
-All routes check company ownership. This is not authentication; the API remains intended for local development until the separate authentication block.
+All routes require a company credential in required mode and check company ownership. Use the existing `XApiKey` header; explicit local-development mode retains unauthenticated testing. See [company access](COMPANY_API_ACCESS.md) for credentials, migration and protected file downloads.
 
 For a small account, add `"executionMode": "sync"`. This submits the same persistent job and waits up to 120 seconds. A finished query returns the previous result shape plus `extractionId` (200 after query execution, 500 for pre-query failure). If still pending, it returns 202. Closing the HTTP connection stops the wait and leaves the job intact.
 
@@ -164,7 +164,7 @@ The PostgreSQL results each reference a conversion and preserve the queried taxp
 
 The automated container entrypoint probe checks graceful signal forwarding, normal restart and recovery after SIGKILL, without contacting SRI. Run it with `bash scripts/test-container-entrypoint.sh sri-crawler-worker` after building the worker image. SRI availability and CAPTCHA acceptance remain external dependencies; bounded rejection is reported explicitly.
 
-No webhooks, frontend, nightly scheduler, authentication, signed URLs, historical migration or issued-contract changes are included. Real R2 validation requires R2 credentials and remains pending. The earlier recovery acceptance above covers XML. The subsequent metadata/file-validation block also completed real 306-document XML and PDF extractions in isolated local storage; see [the validation acceptance record](RECEIVED_DOCUMENT_VALIDATION.md#real-acceptance-october-7-2026).
+The original asynchronous block excluded authentication; the later [company-access block](COMPANY_API_ACCESS.md) adds it. Webhooks, frontend, nightly scheduling, signed URLs, historical migration and commercial issued support remain separate blocks. Real R2 validation requires R2 credentials and remains pending. The earlier recovery acceptance above covers XML. The subsequent metadata/file-validation block also completed real 306-document XML and PDF extractions in isolated local storage; see [the validation acceptance record](RECEIVED_DOCUMENT_VALIDATION.md#real-acceptance-october-7-2026).
 
 ## Cross-extraction reuse
 
